@@ -168,7 +168,7 @@ Files and a basic report may want to arrive earlier if a milestone needs them. T
 
 ## Intended repository shape
 
-A monorepo, when implementation starts. This tree is a target. It does not exist yet, and this repository stays documentation until a phase begins.
+A monorepo. Phase 1 has started with `services/api`, `db/migrations`, and `compose.yaml`. The rest of this tree is still the target. Those directories are created when a story needs them.
 
 ```text
 /

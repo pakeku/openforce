@@ -4,7 +4,7 @@ Openforce is an open-source business operating system. CRM is the first applicat
 
 Salesforce is the existence proof that one system can run a company's records, process, and integrations. It is also priced so that plenty of teams rent less than they need. Openforce is a side project aimed at that same class of power, in the open, starting from the kernel.
 
-This repository is the specification. No service, schema, or interface is implemented yet.
+The specification lives in [requirements](requirements/README.md). The kernel API is the Go service in `services/api`.
 
 ## The platform
 
@@ -52,4 +52,45 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Informational. The requirements are written so implementation can start against them. The [roadmap](requirements/roadmap/README.md) is the build order. The first milestone is small on purpose: define an object, then create, read, update, and delete its records.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Metadata UI, events, jobs, and automation come in later phases.
+
+## Run the kernel
+
+Start Postgres, apply migrations, create an owner, and run the API from the repo root:
+
+```text
+docker compose up -d
+go run -C services/api . migrate
+go run -C services/api . seed -org Acme -email ada@example.com -name Ada
+go run -C services/api .
+```
+
+The seed command prints an organization id and a bearer token once. Send it as `Authorization: Bearer <token>` on `/api/*`. `GET /healthz` is public. It returns 200 when Postgres accepts a connection, and 503 when it does not.
+
+The default database URL is `postgres://openforce:openforce@localhost:5432/openforce?sslmode=disable`. Override it with `DATABASE_URL`. The API listens on `:8080`. Override the port with `PORT`, or the whole address with `ADDR`.
+
+```text
+go test -C services/api ./...
+```
+
+The tests start an embedded Postgres, so Docker is not required to run them.
+
+## Kernel API
+
+| | |
+| --- | --- |
+| `GET /healthz` | Database reachability. No token. |
+| `POST /api/meta/objects` | Owner defines an object and its fields. |
+| `GET /api/meta/objects` | Objects in the caller's organization. |
+| `GET /api/meta/objects/{name}` | One object and its fields. |
+| `PUT /api/meta/objects/{name}/permissions` | Owner sets whether the member role can read and write. |
+| `POST /api/meta/objects/{name}/relationships` | `belongs_to`, `has_many`, or `many_to_many`. |
+| `GET /api/objects/{name}` | Live records of that object. Default limit 50, maximum 200. |
+| `POST /api/objects/{name}` | Create a record. The body is the field values. Version starts at 1. |
+| `GET /api/objects/{name}/{id}` | One live record. |
+| `PATCH /api/objects/{name}/{id}` | `{"version":N,"data":{...}}` merges those fields. A stale version returns 409. |
+| `DELETE /api/objects/{name}/{id}` | Sets `deleted_at`. Later reads omit the row. The row stays in Postgres. |
+| `GET /api/objects/{name}/{id}/related/{relationship}` | Records on the other side of a relationship. |
+| `POST /api/objects/{name}/{id}/related/{relationship}` | Links a many-to-many record. Body is `{"id":"..."}`. |
+
+Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant.
