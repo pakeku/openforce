@@ -1,0 +1,229 @@
+# Roadmap
+
+Six phases, in dependency order. Each phase has one goal. Requirements listed under a phase are the ones that phase has to make real. Later requirements are specified now so the kernel does not paint them into a corner, and they are not built first.
+
+The spine:
+
+```text
+                    ┌──────────────┐
+                    │  PostgreSQL  │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │ Object model │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │   Metadata   │
+                    └──────┬───────┘
+                           │
+             ┌─────────────┼─────────────┐
+             │             │             │
+        ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
+        │   API   │   │   UI    │   │  AuthZ  │
+        └────┬────┘   └────┬────┘   └────┬────┘
+             │             │             │
+             └─────────────┼─────────────┘
+                           │
+                    ┌──────▼───────┐
+                    │    Events    │
+                    └──────┬───────┘
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+     ┌────▼────┐      ┌────▼─────┐     ┌───▼────┐
+     │Workflow │      │ Webhooks │     │ Audit  │
+     └────┬────┘      └────┬─────┘     └────────┘
+          │                │
+          └────────┬───────┘
+                   │
+             ┌─────▼──────┐
+             │ Integrations│
+             └─────┬──────┘
+                   │
+             ┌─────▼──────┐
+             │  Developer │
+             │  platform  │
+             └────────────┘
+```
+
+Permissions sit on the spine before events, even though field-level and sharing rules keep growing after Phase 1. The rule is in [principles](../principles/README.md#one-policy-engine).
+
+## Phase 1. Kernel
+
+[Database](../kernel/database/README.md), [object model](../kernel/object-model/README.md), [query and API](../kernel/query-api/README.md), [permissions](../kernel/permissions/README.md).
+
+```text
+Postgres
+Tenant
+User
+Object
+Field
+Record
+Relationship
+CRUD API
+```
+
+**Goal.** Define an object, then create, read, update, and delete its records.
+
+Permissions in this phase cover authentication, organization membership, and object-level allow or deny, enforced through the policy engine. Finer sharing arrives with the UI.
+
+## Phase 2. Metadata and UI
+
+[Metadata](../kernel/metadata/README.md), [UI runtime](../runtime/ui-runtime/README.md), [page builder](../runtime/page-builder/README.md).
+
+```text
+Metadata
+Dynamic forms
+Dynamic tables
+Layouts
+Views
+Filters
+Sorting
+Record pages
+```
+
+**Goal.** Create a new object without writing React.
+
+Record pages, forms, tables, filters, and sorting are the Phase 2 page builder. Dashboards, portals, and custom components use the same page model and follow once record pages work.
+
+## Phase 3. Events
+
+[Events](../kernel/events/README.md), [jobs](../kernel/jobs/README.md), [audit](../kernel/audit/README.md), and the outbound half of [webhooks](../integrations/webhooks/README.md).
+
+```text
+Event model
+Event persistence
+Redis
+Workers
+Audit
+Webhooks
+```
+
+**Goal.** Every meaningful mutation produces a reliable event.
+
+## Phase 4. Automation
+
+[Automation](../runtime/automation/README.md).
+
+```text
+Triggers
+Conditions
+Actions
+Schedules
+Retries
+Execution history
+```
+
+**Goal.** Recreate about 80% of a simple workflow with Openforce's own primitives. The domain model stays Openforce's. n8n is the reference for what that simple case includes.
+
+## Phase 5. Integrations
+
+[Connector runtime](../integrations/connector-runtime/README.md), and the inbound half of [webhooks](../integrations/webhooks/README.md).
+
+```text
+OAuth
+Credentials
+Connectors
+Inbound webhooks
+Outbound webhooks
+Polling
+Sync
+Mapping
+Rate limiting
+```
+
+**Goal.** External systems become another source and sink of events and records.
+
+## Phase 6. Developer platform
+
+[Developer experience](../developer-platform/developer-experience/README.md), [environments](../developer-platform/environments/README.md), [functions](../developer-platform/functions/README.md), plus API keys, service accounts, SDKs, and OpenAPI on the [public API](../integrations/webhooks/README.md).
+
+```text
+CLI
+Git
+Schemas
+Metadata migrations
+Environments
+Functions
+SDK
+API keys
+OpenAPI
+```
+
+**Goal.** A developer can build an entire business application on the platform without editing Openforce's core source.
+
+## After the six phases
+
+These are specified, and they wait until an application can be expressed on the primitives:
+
+- [Search](../runtime/search/README.md) beyond Postgres full-text
+- [Files](../runtime/files/README.md)
+- [Reporting](../runtime/reporting/README.md)
+- [AI](../ai/README.md)
+- Further applications: service, marketing, projects, ERP-shaped modules
+- A marketplace and an app store, after the connector runtime is real
+
+Files and a basic report may want to arrive earlier if a milestone needs them. The spec keeps them out of the spine so they do not distract from it.
+
+## Intended repository shape
+
+A monorepo, when implementation starts. This tree is a target. It does not exist yet, and this repository stays documentation until a phase begins.
+
+```text
+/
+├── apps/
+│   ├── web/
+│   ├── admin/
+│   └── api/
+├── packages/
+│   ├── metadata/
+│   ├── objects/
+│   ├── fields/
+│   ├── relationships/
+│   ├── permissions/
+│   ├── events/
+│   ├── workflows/
+│   ├── integrations/
+│   ├── audit/
+│   ├── search/
+│   ├── files/
+│   └── reporting/
+├── services/
+│   ├── api/
+│   ├── worker/
+│   ├── workflow/
+│   ├── integrations/
+│   └── notifications/
+├── infrastructure/
+│   ├── postgres/
+│   ├── redis/
+│   ├── storage/
+│   └── terraform/
+├── cli/
+└── examples/
+    ├── crm/
+    ├── recruiting/
+    └── project-management/
+```
+
+`examples/crm` is the first vertical from the [vision](../vision/README.md). Recruiting and project management are there to prove the platform is not secretly a CRM with extra tables.
+
+## Next design work
+
+The consequential open design is the kernel schema and API. These requirements name the concepts and the constraints. They do not yet specify tables, types, or handlers.
+
+The types to design first, across Postgres, Go, and TypeScript:
+
+```text
+ObjectDefinition
+FieldDefinition
+Record
+Event
+Workflow
+Action
+Permission
+PageDefinition
+```
+
+That design is the bridge from this spec to Phase 1.
