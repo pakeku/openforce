@@ -32,12 +32,13 @@ var eventNames = map[string]struct{}{
 }
 
 type eventWrite struct {
-	Name     string
-	ActorID  string
-	ObjectID string
-	RecordID string
-	Source   string
-	Payload  map[string]any
+	Name              string
+	ActorID           string
+	ObjectID          string
+	RecordID          string
+	Source            string
+	Payload           map[string]any
+	CauseAutomationID string
 }
 
 type eventView struct {
@@ -80,10 +81,10 @@ func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) er
 	if err != nil {
 		return err
 	}
-	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name, ev.ObjectID)
+	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name, ev.ObjectID, ev.CauseAutomationID)
 }
 
-func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID string) error {
+func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID, excludeAutomationID string) error {
 	if name == "field.changed" || name == "record.deleted" {
 		if err := enqueueJob(ctx, tx, orgID, eventID, "audit", "", ""); err != nil {
 			return err
@@ -92,7 +93,7 @@ func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name, obj
 	if err := enqueueWebhookJobs(ctx, tx, orgID, eventID, name); err != nil {
 		return err
 	}
-	return enqueueAutomationJobs(ctx, tx, orgID, eventID, name, objectID)
+	return enqueueAutomationJobs(ctx, tx, orgID, eventID, name, objectID, excludeAutomationID)
 }
 
 func uuidOrNil(id string) any {

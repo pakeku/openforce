@@ -22,8 +22,9 @@ type condition struct {
 
 type automationAction struct {
 	Type   string         `json:"type"`
-	Object string         `json:"object"`
-	Data   map[string]any `json:"data"`
+	Object string         `json:"object,omitempty"`
+	Record any            `json:"record,omitempty"`
+	Data   map[string]any `json:"data,omitempty"`
 }
 
 type automationInput struct {
@@ -63,17 +64,22 @@ type executionView struct {
 }
 
 // enqueueAutomationJobs stores the work. The request does not run the workflow.
-func enqueueAutomationJobs(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID string) error {
+func enqueueAutomationJobs(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID, excludeID string) error {
 	if objectID == "" {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `
+	args := []any{orgID, name, objectID}
+	query := `
 		select id::text
 		from automation_definitions
 		where organization_id = $1::uuid
 			and event_name = $2
-			and object_id = $3::uuid
-	`, orgID, name, objectID)
+			and object_id = $3::uuid`
+	if excludeID != "" {
+		args = append(args, excludeID)
+		query += " and id <> $4::uuid"
+	}
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -334,7 +340,7 @@ func (s *server) prepareAutomation(ctx context.Context, orgID string, body *auto
 			return "", err
 		}
 	}
-	if err := s.validateActions(ctx, orgID, byName, body.Actions); err != nil {
+	if err := s.validateActions(ctx, orgID, body.Object, byName, body.Actions); err != nil {
 		return "", err
 	}
 	return objectID, nil
@@ -366,50 +372,96 @@ func conditionOp(fieldType, op string) bool {
 	}
 }
 
-func (s *server) validateActions(ctx context.Context, orgID string, source map[string]fieldDef, actions []automationAction) error {
+func (s *server) validateActions(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, actions []automationAction) error {
 	if len(actions) == 0 {
 		return apiErr(http.StatusBadRequest, "actions are required")
 	}
 	for _, action := range actions {
-		if action.Type != "create" {
+		switch action.Type {
+		case "create", "update", "delete":
+		default:
 			return apiErr(http.StatusBadRequest, "invalid action")
 		}
-		if !namePattern.MatchString(action.Object) {
-			return apiErr(http.StatusBadRequest, "invalid name")
+		if err := validateActionRecord(action.Record); err != nil {
+			return err
 		}
-		targetID, err := s.objectByName(ctx, orgID, action.Object)
+		if action.Type == "delete" && len(action.Data) > 0 {
+			return apiErr(http.StatusBadRequest, "invalid action")
+		}
+		if action.Type == "update" && len(action.Data) == 0 {
+			return apiErr(http.StatusBadRequest, "data is required")
+		}
+		defs, err := s.actionFields(ctx, orgID, sourceName, source, action)
 		if err != nil {
 			return err
 		}
-		defs, err := s.fieldDefs(ctx, targetID)
+		if action.Type == "delete" {
+			continue
+		}
+		sample, err := actionSample(source, action.Data)
 		if err != nil {
 			return err
 		}
-		sample := map[string]any{}
-		for key, value := range action.Data {
-			if field, ok := fieldRef(value); ok {
-				sourceDef, known := source[field]
-				if !known {
-					return apiErrf(http.StatusBadRequest, "unknown field %s", field)
-				}
-				copied, err := sampleValue(sourceDef)
-				if err != nil {
-					return err
-				}
-				sample[key] = copied
-				continue
-			}
-			if isRecordRef(value) {
-				sample[key] = uuid.NewString()
-				continue
-			}
-			sample[key] = value
-		}
-		if err := validateData(defs, sample, true); err != nil {
+		if err := validateData(defs, sample, action.Type == "create"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *server) actionFields(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, action automationAction) ([]fieldDef, error) {
+	if action.Type != "create" && action.Object == "" {
+		defs := make([]fieldDef, 0, len(source))
+		for _, def := range source {
+			defs = append(defs, def)
+		}
+		return defs, nil
+	}
+	if !namePattern.MatchString(action.Object) {
+		return nil, apiErr(http.StatusBadRequest, "invalid name")
+	}
+	if action.Type != "create" && action.Object != sourceName && action.Record == nil {
+		return nil, apiErr(http.StatusBadRequest, "invalid record")
+	}
+	targetID, err := s.objectByName(ctx, orgID, action.Object)
+	if err != nil {
+		return nil, err
+	}
+	return s.fieldDefs(ctx, targetID)
+}
+
+func actionSample(source map[string]fieldDef, data map[string]any) (map[string]any, error) {
+	sample := map[string]any{}
+	for key, value := range data {
+		if field, ok := fieldRef(value); ok {
+			sourceDef, known := source[field]
+			if !known {
+				return nil, apiErrf(http.StatusBadRequest, "unknown field %s", field)
+			}
+			copied, err := sampleValue(sourceDef)
+			if err != nil {
+				return nil, err
+			}
+			sample[key] = copied
+			continue
+		}
+		if isRecordRef(value) {
+			sample[key] = uuid.NewString()
+			continue
+		}
+		sample[key] = value
+	}
+	return sample, nil
+}
+
+func validateActionRecord(value any) error {
+	if value == nil || isRecordRef(value) {
+		return nil
+	}
+	if _, ok := fieldRef(value); ok {
+		return nil
+	}
+	return apiErr(http.StatusBadRequest, "invalid record")
 }
 
 func sampleValue(def fieldDef) (any, error) {
@@ -603,14 +655,101 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if event.RecordID != nil {
 		recordID = *event.RecordID
 	}
+	sourceName, _ := event.Payload["object"].(string)
+	sourceObjectID := ""
+	if event.ObjectID != nil {
+		sourceObjectID = *event.ObjectID
+	}
 	for _, action := range actions {
-		id, err := s.runCreateAction(ctx, actor, recordID, data, action)
+		id, err := s.runAction(ctx, actor, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
 		if err != nil {
 			return err
 		}
-		created = append(created, id)
+		if id != "" {
+			created = append(created, id)
+		}
 	}
 	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", created)
+}
+
+func (s *server) runAction(ctx context.Context, a actor, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
+	switch action.Type {
+	case "create":
+		return s.runCreateAction(ctx, a, recordID, record, action, cause)
+	case "update":
+		return "", s.runUpdateAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
+	case "delete":
+		return "", s.runDeleteAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
+	default:
+		return "", fmt.Errorf("invalid action")
+	}
+}
+
+func (s *server) actionObject(ctx context.Context, orgID, sourceName, sourceObjectID string, action automationAction) (string, string, error) {
+	if action.Object == "" {
+		if sourceObjectID == "" || sourceName == "" {
+			return "", "", fmt.Errorf("invalid record")
+		}
+		return sourceObjectID, sourceName, nil
+	}
+	id, err := s.objectByName(ctx, orgID, action.Object)
+	if err != nil {
+		return "", "", err
+	}
+	return id, action.Object, nil
+}
+
+func (s *server) runUpdateAction(ctx context.Context, a actor, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) error {
+	objectID, objectName, err := s.actionObject(ctx, a.OrgID, sourceName, sourceObjectID, action)
+	if err != nil {
+		return err
+	}
+	if err := s.authorize(ctx, a, objectID, true); err != nil {
+		return err
+	}
+	id, err := resolveTargetID(action, recordID, record)
+	if err != nil {
+		return err
+	}
+	patch, err := resolveActionData(action.Data, recordID, record)
+	if err != nil {
+		return err
+	}
+	_, err = s.writeRecordPatch(ctx, a, objectID, objectName, id, patch, sourceAutomation, cause)
+	return err
+}
+
+func (s *server) runDeleteAction(ctx context.Context, a actor, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) error {
+	objectID, objectName, err := s.actionObject(ctx, a.OrgID, sourceName, sourceObjectID, action)
+	if err != nil {
+		return err
+	}
+	if err := s.authorize(ctx, a, objectID, true); err != nil {
+		return err
+	}
+	id, err := resolveTargetID(action, recordID, record)
+	if err != nil {
+		return err
+	}
+	return s.writeRecordDelete(ctx, a, objectID, objectName, id, sourceAutomation, cause)
+}
+
+func resolveTargetID(action automationAction, triggerID string, record map[string]any) (string, error) {
+	if action.Record == nil || isRecordRef(action.Record) {
+		if _, err := uuid.Parse(triggerID); err != nil {
+			return "", fmt.Errorf("invalid record")
+		}
+		return triggerID, nil
+	}
+	field, ok := fieldRef(action.Record)
+	if !ok {
+		return "", fmt.Errorf("invalid record")
+	}
+	id, _ := record[field].(string)
+	if _, err := uuid.Parse(id); err != nil {
+		return "", fmt.Errorf("invalid record")
+	}
+	return id, nil
 }
 
 func (s *server) automationRecord(ctx context.Context, event webhookEvent) (map[string]any, error) {
@@ -658,7 +797,7 @@ func (s *server) memberActor(ctx context.Context, orgID, userID string) (actor, 
 	return actor{UserID: userID, OrgID: orgID, Role: role}, nil
 }
 
-func (s *server) runCreateAction(ctx context.Context, a actor, recordID string, record map[string]any, action automationAction) (string, error) {
+func (s *server) runCreateAction(ctx context.Context, a actor, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
 	objectID, err := s.objectByName(ctx, a.OrgID, action.Object)
 	if err != nil {
 		return "", err
@@ -680,7 +819,7 @@ func (s *server) runCreateAction(ctx context.Context, a actor, recordID string, 
 	if err := s.checkRelations(ctx, a.OrgID, objectID, defs, data); err != nil {
 		return "", err
 	}
-	view, err := s.insertRecord(ctx, a, objectID, action.Object, defs, data, sourceAutomation)
+	view, err := s.insertRecord(ctx, a, objectID, action.Object, defs, data, sourceAutomation, cause)
 	if err != nil {
 		return "", err
 	}
