@@ -143,7 +143,7 @@ The request does not write the audit log or call a webhook. A field change or a 
 
 ## Work with records
 
-The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page.
+The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page. The Flows screen draws a workflow with [React Flow](https://reactflow.dev/learn) and saves that chain through the automation API.
 
 ```text
 cd apps/web
