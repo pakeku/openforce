@@ -12,6 +12,7 @@ func runSeed(args []string) int {
 	org := fs.String("org", "", "organization name")
 	email := fs.String("email", "", "owner email")
 	name := fs.String("name", "", "owner name")
+	password := fs.String("password", "", "owner password")
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -38,7 +39,7 @@ func runSeed(args []string) int {
 	}
 
 	s := &server{pool: pool, redis: client}
-	orgID, token, err := s.bootstrap(ctx, *org, *name, *email, "owner")
+	orgID, token, err := s.bootstrap(ctx, *org, *name, *email, "owner", *password)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -19,6 +19,8 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	s := &server{pool: pool, redis: sharedRedis}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(pool.Ping))
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/members", s.requireUser(s.createMember))
 	mux.HandleFunc("GET /api/events", s.requireAuth(s.listEvents))
 	mux.HandleFunc("GET /api/jobs", s.requireUser(s.listJobs))
 	mux.HandleFunc("GET /api/webhooks", s.requireUser(s.listWebhooks))

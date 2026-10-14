@@ -107,11 +107,15 @@ func tokenHash(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role string) (orgID, token string, err error) {
+func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role, password string) (orgID, token string, err error) {
 	if role != "owner" && role != "member" {
 		return "", "", apiErr(http.StatusBadRequest, "invalid role")
 	}
 	raw, hash, err := newToken()
+	if err != nil {
+		return "", "", err
+	}
+	passwordHash, err := passwordHashArg(password)
 	if err != nil {
 		return "", "", err
 	}
@@ -126,7 +130,7 @@ func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role s
 	if _, err = tx.Exec(ctx, `insert into organizations (id, name) values ($1, $2)`, orgID, orgName); err != nil {
 		return "", "", err
 	}
-	if _, err = tx.Exec(ctx, `insert into users (id, email, name) values ($1, $2, $3)`, userID, strings.ToLower(email), userName); err != nil {
+	if _, err = tx.Exec(ctx, `insert into users (id, email, name, password_hash) values ($1, $2, $3, $4)`, userID, strings.ToLower(email), userName, passwordHash); err != nil {
 		return "", "", err
 	}
 	if _, err = tx.Exec(ctx, `insert into memberships (organization_id, user_id, role) values ($1, $2, $3)`, orgID, userID, role); err != nil {

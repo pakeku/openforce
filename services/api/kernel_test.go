@@ -642,7 +642,7 @@ func companyObject() map[string]any {
 
 func newOwner(t *testing.T, org, email string) string {
 	t.Helper()
-	_, token, err := (&server{pool: testPool}).bootstrap(context.Background(), org, "Owner", email, "owner")
+	_, token, err := (&server{pool: testPool}).bootstrap(context.Background(), org, "Owner", email, "owner", "")
 	if err != nil {
 		t.Fatal(err)
 	}

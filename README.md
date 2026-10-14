@@ -65,7 +65,7 @@ go run -C services/api . seed -org Acme -email ada@example.com -name Ada
 go run -C services/api .
 ```
 
-The seed command prints an organization id and a bearer token once. Send it as `Authorization: Bearer <token>` on `/api/*`. `GET /healthz` is public. It returns 200 when Postgres accepts a connection, and 503 when it does not.
+The seed command prints an organization id and a bearer token once. Optional `-password` stores a bcrypt hash for that owner so the same email can sign in. The command still prints the token and does not print the password. Without `-password`, the hash stays null. Send the token as `Authorization: Bearer <token>` on `/api/*`. `GET /healthz` is public. It returns 200 when Postgres accepts a connection, and 503 when it does not.
 
 The default database URL is `postgres://openforce:openforce@localhost:5432/openforce?sslmode=disable`. Override it with `DATABASE_URL`. The API listens on `:8080`. Override the port with `PORT`, or the whole address with `ADDR`. Set `REDIS_URL` to `redis://localhost:6379/0` when the worker should wake from Redis. Leave it unset to keep polling Postgres.
 
@@ -80,6 +80,8 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | | |
 | --- | --- |
 | `GET /healthz` | Database reachability. No token. |
+| `POST /api/login` | Public. Email and password return a bearer token and an organization id. |
+| `POST /api/members` | Owner creates a member with a password. No token in the response. |
 | `POST /api/meta/objects` | Owner defines an object and its fields. |
 | `GET /api/meta/objects` | Objects in the caller's organization. |
 | `GET /api/meta/objects/{name}` | One object and its fields. |
@@ -122,6 +124,8 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `DELETE /api/automations/{name}` | Owner removes a workflow and its pending jobs. |
 | `GET /api/automations/{name}/executions` | Whether each matching event was skipped or done. |
 | `GET /api/emails` | Owner lists stored outbound email. The message is stored, not sent. |
+
+`POST /api/login` takes `email` and `password`. One membership returns 200 `{token, organization}` for that organization. More than one membership also requires `organization`, the organization id, or the response is 400 `organization is required`. An unknown email, a wrong password, and a user with no password are all 401 `unauthorized`. The body does not say which part failed. The token is a new bearer token and authenticates as that user. `POST /api/members` is owner-only. The body is `name`, `email`, and `password`. A password shorter than 8 characters, or a missing password, is 400 `password is required`. The email is stored lowercase. A duplicate email is 409. The 201 response is `email`, `name`, and `role` `member`. It returns no token and no password. A member or a service key receives 403. There is no public signup, no password-reset email, and no external identity provider. Programs still use API keys.
 
 Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant. An API key uses the grants stored on that key. A member lists objects and reads their views, layouts, pages, and relationships only when that member can read the object.
 
@@ -168,4 +172,4 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` and paste the seed token. The API has to be running. Set `VITE_API_URL` when it is not `http://localhost:8080`.
+Open `http://localhost:5173`. When no token is stored, sign in with email and password, or paste the seed token. The API has to be running. Set `VITE_API_URL` when it is not `http://localhost:8080`.
