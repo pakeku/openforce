@@ -52,7 +52,7 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion stores an audit job, a webhook subscription stores a delivery job, and a separate `work` command completes both. With `REDIS_URL` set, the commit publishes due jobs to Redis so that worker can wake up. Automation comes in a later phase.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion stores an audit job, a webhook subscription stores a delivery job, and a separate `work` command completes both. With `REDIS_URL` set, the commit publishes due jobs to Redis so that worker can wake up. A workflow can subscribe to a record event, and that same worker runs it after the commit.
 
 ## Run the kernel
 
@@ -98,6 +98,11 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `GET /api/webhooks` | Subscriptions in the caller's organization, without secrets. |
 | `DELETE /api/webhooks/{id}` | Owner removes a subscription. |
 | `GET /api/objects/{name}/{id}/audit` | Field history for one record, including a deleted record. |
+| `POST /api/automations` | Owner defines a workflow on a record event. |
+| `GET /api/automations` | Workflows in the caller's organization. |
+| `PATCH /api/automations/{name}` | Owner sends the current version and gets the next one back. |
+| `DELETE /api/automations/{name}` | Owner removes a workflow and its pending jobs. |
+| `GET /api/automations/{name}/executions` | Whether each matching event was skipped or done. |
 
 Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant.
 
@@ -108,6 +113,8 @@ A committed change also writes an event in that same transaction. Record creates
 The request does not write the audit log or call a webhook. A field change or a deletion stores an audit job in the same transaction as the event. A webhook subscription stores a delivery job for each matching event in that same transaction. After that transaction commits, due jobs are appended to the Redis stream `openforce:jobs` when `REDIS_URL` is set. `go run -C services/api . work` reads the stream, then checks Postgres for jobs that are still due, and exits. The job row in Postgres keeps the status, the attempt count, and the dead letter. A job that fails waits longer before the next try, and after 5 attempts it is marked dead. `GET /api/jobs` lists the caller's jobs. `GET /api/objects/{name}/{id}/audit` returns the field history in event order, including after the record is deleted.
 
 `POST /api/webhooks` takes `{"url":"https://example.com/hook","events":["record.created"]}`. `work` POSTs the event as JSON. The header `X-Openforce-Signature` is `sha256=` plus the hex HMAC-SHA256 of the raw body, keyed by the subscription secret. A response outside 2xx fails the job.
+
+`POST /api/automations` takes a name, a label, an event (`record.created`, `record.updated`, or `record.deleted`), an object, conditions, and actions. Conditions use the same operators as a list filter and are combined with and. The first action is `create`. A value `{"field":"name"}` copies a field from the triggering record, and `{"record":true}` copies that record's id. The record request stores an automation job in the same transaction as the event. `work` checks the conditions and, when they match, creates the record as the user who caused the event. A miss is an execution with status `skipped`. A create is `done`. The policy check still applies to that create.
 
 ## Work with records
 

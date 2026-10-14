@@ -74,7 +74,7 @@ func enqueueWebhookJobs(ctx context.Context, tx pgx.Tx, orgID, eventID, name str
 		return err
 	}
 	for _, id := range ids {
-		if err := enqueueJob(ctx, tx, orgID, eventID, "webhook", id); err != nil {
+		if err := enqueueJob(ctx, tx, orgID, eventID, "webhook", id, ""); err != nil {
 			return err
 		}
 	}

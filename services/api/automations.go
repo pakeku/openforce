@@ -1,0 +1,817 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+)
+
+type condition struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value any    `json:"value"`
+}
+
+type automationAction struct {
+	Type   string         `json:"type"`
+	Object string         `json:"object"`
+	Data   map[string]any `json:"data"`
+}
+
+type automationInput struct {
+	Name       string             `json:"name"`
+	Label      string             `json:"label"`
+	Event      string             `json:"event"`
+	Object     string             `json:"object"`
+	Conditions []condition        `json:"conditions"`
+	Actions    []automationAction `json:"actions"`
+}
+
+type automationPatch struct {
+	Version    int                 `json:"version"`
+	Label      *string             `json:"label"`
+	Conditions *[]condition        `json:"conditions"`
+	Actions    *[]automationAction `json:"actions"`
+}
+
+type automationView struct {
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Label      string             `json:"label"`
+	Event      string             `json:"event"`
+	Object     string             `json:"object"`
+	ObjectID   string             `json:"-"`
+	Version    int                `json:"version"`
+	Conditions []condition        `json:"conditions"`
+	Actions    []automationAction `json:"actions"`
+}
+
+type executionView struct {
+	ID        string    `json:"id"`
+	EventID   string    `json:"event_id"`
+	Status    string    `json:"status"`
+	Created   []string  `json:"created"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// enqueueAutomationJobs stores the work. The request does not run the workflow.
+func enqueueAutomationJobs(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID string) error {
+	if objectID == "" {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		select id::text
+		from automation_definitions
+		where organization_id = $1::uuid
+			and event_name = $2
+			and object_id = $3::uuid
+	`, orgID, name, objectID)
+	if err != nil {
+		return err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := enqueueJob(ctx, tx, orgID, eventID, "automation", "", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	if err := ownerOnly(a); err != nil {
+		writeErr(w, err)
+		return
+	}
+	var body automationInput
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	objectID, err := s.prepareAutomation(r.Context(), a.OrgID, &body)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	conditions, actions, err := encodeAutomation(body.Conditions, body.Actions)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	view := automationView{
+		ID: uuid.NewString(), Name: body.Name, Label: body.Label, Event: body.Event,
+		Object: body.Object, ObjectID: objectID, Version: 1,
+		Conditions: body.Conditions, Actions: body.Actions,
+	}
+	_, err = s.pool.Exec(r.Context(), `
+		insert into automation_definitions
+			(id, organization_id, name, label, event_name, object_id, conditions, actions)
+		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+	`, view.ID, a.OrgID, view.Name, view.Label, view.Event, objectID, conditions, actions)
+	if isUnique(err) {
+		writeErr(w, apiErr(http.StatusConflict, "automation already exists"))
+		return
+	}
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, view)
+}
+
+func (s *server) listAutomations(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	views, err := s.selectAutomations(r.Context(), a.OrgID, "")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"automations": views})
+}
+
+func (s *server) getAutomation(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	view, err := s.loadAutomationByName(r.Context(), a.OrgID, r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *server) patchAutomation(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	if err := ownerOnly(a); err != nil {
+		writeErr(w, err)
+		return
+	}
+	var body automationPatch
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if body.Version < 1 {
+		writeErr(w, apiErr(http.StatusBadRequest, "version is required"))
+		return
+	}
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	current, err := lockAutomation(r.Context(), tx, a.OrgID, r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if current.Version != body.Version {
+		writeErr(w, apiErr(http.StatusConflict, "stale version"))
+		return
+	}
+	next := automationInput{
+		Name: current.Name, Label: current.Label, Event: current.Event, Object: current.Object,
+		Conditions: current.Conditions, Actions: current.Actions,
+	}
+	if body.Label != nil {
+		next.Label = *body.Label
+	}
+	if body.Conditions != nil {
+		next.Conditions = *body.Conditions
+	}
+	if body.Actions != nil {
+		next.Actions = *body.Actions
+	}
+	if _, err := s.prepareAutomation(r.Context(), a.OrgID, &next); err != nil {
+		writeErr(w, err)
+		return
+	}
+	conditions, actions, err := encodeAutomation(next.Conditions, next.Actions)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := tx.QueryRow(r.Context(), `
+		update automation_definitions
+		set label = $1, conditions = $2::jsonb, actions = $3::jsonb,
+			version = version + 1, updated_at = now()
+		where id = $4::uuid and version = $5
+		returning version
+	`, next.Label, conditions, actions, current.ID, body.Version).Scan(&current.Version); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeErr(w, err)
+		return
+	}
+	current.Label = next.Label
+	current.Conditions = next.Conditions
+	current.Actions = next.Actions
+	writeJSON(w, http.StatusOK, current)
+}
+
+func (s *server) deleteAutomation(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	if err := ownerOnly(a); err != nil {
+		writeErr(w, err)
+		return
+	}
+	tag, err := s.pool.Exec(r.Context(), `
+		delete from automation_definitions
+		where organization_id = $1::uuid and name = $2
+	`, a.OrgID, r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, apiErr(http.StatusNotFound, "not found"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) listExecutions(w http.ResponseWriter, r *http.Request) {
+	a := actorFrom(r.Context())
+	view, err := s.loadAutomationByName(r.Context(), a.OrgID, r.PathValue("name"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	rows, err := s.pool.Query(r.Context(), `
+		select id::text, event_id::text, status, created_ids, created_at
+		from automation_executions
+		where organization_id = $1::uuid and automation_id = $2::uuid
+		order by created_at, id
+	`, a.OrgID, view.ID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rows.Close()
+	executions := []executionView{}
+	for rows.Next() {
+		var view executionView
+		var raw []byte
+		if err := rows.Scan(&view.ID, &view.EventID, &view.Status, &raw, &view.CreatedAt); err != nil {
+			writeErr(w, err)
+			return
+		}
+		view.Created = []string{}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &view.Created); err != nil {
+				writeErr(w, err)
+				return
+			}
+		}
+		if view.Created == nil {
+			view.Created = []string{}
+		}
+		executions = append(executions, view)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"executions": executions})
+}
+
+func (s *server) prepareAutomation(ctx context.Context, orgID string, body *automationInput) (string, error) {
+	if !namePattern.MatchString(body.Name) {
+		return "", apiErr(http.StatusBadRequest, "invalid name")
+	}
+	if body.Label == "" {
+		return "", apiErr(http.StatusBadRequest, "label is required")
+	}
+	switch body.Event {
+	case "record.created", "record.updated", "record.deleted":
+	default:
+		return "", apiErr(http.StatusBadRequest, "invalid event")
+	}
+	if !namePattern.MatchString(body.Object) {
+		return "", apiErr(http.StatusBadRequest, "invalid name")
+	}
+	objectID, err := s.objectByName(ctx, orgID, body.Object)
+	if err != nil {
+		return "", err
+	}
+	defs, err := s.fieldDefs(ctx, objectID)
+	if err != nil {
+		return "", err
+	}
+	if body.Conditions == nil {
+		body.Conditions = []condition{}
+	}
+	byName := indexFields(defs)
+	for _, cond := range body.Conditions {
+		def, ok := byName[cond.Field]
+		if !ok {
+			return "", apiErrf(http.StatusBadRequest, "unknown field %s", cond.Field)
+		}
+		if err := validateCondition(def, cond); err != nil {
+			return "", err
+		}
+	}
+	if err := s.validateActions(ctx, orgID, byName, body.Actions); err != nil {
+		return "", err
+	}
+	return objectID, nil
+}
+
+func validateCondition(def fieldDef, cond condition) error {
+	if !conditionOp(def.Type, cond.Op) {
+		return apiErrf(http.StatusBadRequest, "invalid operator for %s", cond.Field)
+	}
+	if cond.Op == "contains" {
+		if _, ok := cond.Value.(string); !ok {
+			return apiErrf(http.StatusBadRequest, "invalid value for %s", def.Name)
+		}
+		return nil
+	}
+	return validateValue(def, cond.Value)
+}
+
+func conditionOp(fieldType, op string) bool {
+	switch op {
+	case "eq", "neq":
+		return true
+	case "contains":
+		return fieldType == "text"
+	case "gt", "gte", "lt", "lte":
+		return fieldType == "number" || fieldType == "currency" || fieldType == "date"
+	default:
+		return false
+	}
+}
+
+func (s *server) validateActions(ctx context.Context, orgID string, source map[string]fieldDef, actions []automationAction) error {
+	if len(actions) == 0 {
+		return apiErr(http.StatusBadRequest, "actions are required")
+	}
+	for _, action := range actions {
+		if action.Type != "create" {
+			return apiErr(http.StatusBadRequest, "invalid action")
+		}
+		if !namePattern.MatchString(action.Object) {
+			return apiErr(http.StatusBadRequest, "invalid name")
+		}
+		targetID, err := s.objectByName(ctx, orgID, action.Object)
+		if err != nil {
+			return err
+		}
+		defs, err := s.fieldDefs(ctx, targetID)
+		if err != nil {
+			return err
+		}
+		sample := map[string]any{}
+		for key, value := range action.Data {
+			if field, ok := fieldRef(value); ok {
+				sourceDef, known := source[field]
+				if !known {
+					return apiErrf(http.StatusBadRequest, "unknown field %s", field)
+				}
+				copied, err := sampleValue(sourceDef)
+				if err != nil {
+					return err
+				}
+				sample[key] = copied
+				continue
+			}
+			if isRecordRef(value) {
+				sample[key] = uuid.NewString()
+				continue
+			}
+			sample[key] = value
+		}
+		if err := validateData(defs, sample, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sampleValue(def fieldDef) (any, error) {
+	switch def.Type {
+	case "text", "relation":
+		return "sample", nil
+	case "number", "currency":
+		return float64(1), nil
+	case "boolean":
+		return true, nil
+	case "date":
+		return "2020-01-01", nil
+	case "enum":
+		if len(def.Options) == 0 {
+			return nil, apiErrf(http.StatusBadRequest, "invalid value for %s", def.Name)
+		}
+		return def.Options[0], nil
+	default:
+		return nil, apiErrf(http.StatusBadRequest, "invalid value for %s", def.Name)
+	}
+}
+
+func fieldRef(value any) (string, bool) {
+	fields, ok := value.(map[string]any)
+	if !ok || len(fields) != 1 {
+		return "", false
+	}
+	name, ok := fields["field"].(string)
+	return name, ok && namePattern.MatchString(name)
+}
+
+func isRecordRef(value any) bool {
+	fields, ok := value.(map[string]any)
+	if !ok || len(fields) != 1 {
+		return false
+	}
+	flag, ok := fields["record"].(bool)
+	return ok && flag
+}
+
+func encodeAutomation(conditions []condition, actions []automationAction) (string, string, error) {
+	if conditions == nil {
+		conditions = []condition{}
+	}
+	rawConditions, err := json.Marshal(conditions)
+	if err != nil {
+		return "", "", err
+	}
+	rawActions, err := json.Marshal(actions)
+	if err != nil {
+		return "", "", err
+	}
+	return string(rawConditions), string(rawActions), nil
+}
+
+func (s *server) selectAutomations(ctx context.Context, orgID, name string) ([]automationView, error) {
+	args := []any{orgID}
+	query := `
+		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
+			d.version, d.conditions, d.actions
+		from automation_definitions d
+		join object_definitions o on o.id = d.object_id
+		where d.organization_id = $1::uuid`
+	if name != "" {
+		args = append(args, name)
+		query += fmt.Sprintf(" and d.name = $%d", len(args))
+	}
+	query += " order by d.name"
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	views := []automationView{}
+	for rows.Next() {
+		view, err := scanAutomation(rows)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, view)
+	}
+	return views, rows.Err()
+}
+
+func (s *server) loadAutomationByName(ctx context.Context, orgID, name string) (automationView, error) {
+	views, err := s.selectAutomations(ctx, orgID, name)
+	if err != nil {
+		return automationView{}, err
+	}
+	if len(views) == 0 {
+		return automationView{}, apiErr(http.StatusNotFound, "not found")
+	}
+	return views[0], nil
+}
+
+func lockAutomation(ctx context.Context, tx pgx.Tx, orgID, name string) (automationView, error) {
+	row := tx.QueryRow(ctx, `
+		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
+			d.version, d.conditions, d.actions
+		from automation_definitions d
+		join object_definitions o on o.id = d.object_id
+		where d.organization_id = $1::uuid and d.name = $2
+		for update of d
+	`, orgID, name)
+	view, err := scanAutomation(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return automationView{}, apiErr(http.StatusNotFound, "not found")
+	}
+	return view, err
+}
+
+func scanAutomation(row pgx.Row) (automationView, error) {
+	var view automationView
+	var conditions, actions []byte
+	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Event, &view.Object, &view.ObjectID, &view.Version, &conditions, &actions); err != nil {
+		return view, err
+	}
+	view.Conditions = []condition{}
+	view.Actions = []automationAction{}
+	if err := json.Unmarshal(conditions, &view.Conditions); err != nil {
+		return view, err
+	}
+	if err := json.Unmarshal(actions, &view.Actions); err != nil {
+		return view, err
+	}
+	if view.Conditions == nil {
+		view.Conditions = []condition{}
+	}
+	if view.Actions == nil {
+		view.Actions = []automationAction{}
+	}
+	return view, nil
+}
+
+func (s *server) runAutomation(ctx context.Context, job dueJob) error {
+	if job.AutomationID == "" {
+		return nil
+	}
+	var conditionsRaw, actionsRaw []byte
+	err := s.pool.QueryRow(ctx, `
+		select conditions, actions
+		from automation_definitions
+		where id = $1::uuid and organization_id = $2::uuid
+	`, job.AutomationID, job.OrgID).Scan(&conditionsRaw, &actionsRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var existing int
+	err = s.pool.QueryRow(ctx, `
+		select 1 from automation_executions
+		where automation_id = $1::uuid and event_id = $2::uuid
+	`, job.AutomationID, job.EventID).Scan(&existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var conditions []condition
+	var actions []automationAction
+	if err := json.Unmarshal(conditionsRaw, &conditions); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(actionsRaw, &actions); err != nil {
+		return err
+	}
+	event, err := s.loadWebhookEvent(ctx, job.EventID)
+	if err != nil {
+		return err
+	}
+	data, err := s.automationRecord(ctx, event)
+	if err != nil {
+		return err
+	}
+	matched, err := matchConditions(conditions, data)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "skipped", nil)
+	}
+	actor, err := s.memberActor(ctx, job.OrgID, event.ActorID)
+	if err != nil {
+		return err
+	}
+	created := []string{}
+	recordID := ""
+	if event.RecordID != nil {
+		recordID = *event.RecordID
+	}
+	for _, action := range actions {
+		id, err := s.runCreateAction(ctx, actor, recordID, data, action)
+		if err != nil {
+			return err
+		}
+		created = append(created, id)
+	}
+	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", created)
+}
+
+func (s *server) automationRecord(ctx context.Context, event webhookEvent) (map[string]any, error) {
+	if data, ok := payloadData(event.Payload); ok {
+		return data, nil
+	}
+	if event.RecordID == nil {
+		return map[string]any{}, nil
+	}
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `
+		select data from records
+		where id = $1::uuid and organization_id = $2::uuid
+	`, *event.RecordID, event.OrganizationID).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	data := map[string]any{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
+func payloadData(payload map[string]any) (map[string]any, bool) {
+	raw, ok := payload["data"]
+	if !ok || raw == nil {
+		return nil, false
+	}
+	data, ok := raw.(map[string]any)
+	return data, ok
+}
+
+func (s *server) memberActor(ctx context.Context, orgID, userID string) (actor, error) {
+	var role string
+	err := s.pool.QueryRow(ctx, `
+		select role from memberships
+		where organization_id = $1::uuid and user_id = $2::uuid
+	`, orgID, userID).Scan(&role)
+	if err != nil {
+		return actor{}, err
+	}
+	return actor{UserID: userID, OrgID: orgID, Role: role}, nil
+}
+
+func (s *server) runCreateAction(ctx context.Context, a actor, recordID string, record map[string]any, action automationAction) (string, error) {
+	objectID, err := s.objectByName(ctx, a.OrgID, action.Object)
+	if err != nil {
+		return "", err
+	}
+	if err := s.authorize(ctx, a, objectID, true); err != nil {
+		return "", err
+	}
+	data, err := resolveActionData(action.Data, recordID, record)
+	if err != nil {
+		return "", err
+	}
+	defs, err := s.fieldDefs(ctx, objectID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateData(defs, data, true); err != nil {
+		return "", err
+	}
+	if err := s.checkRelations(ctx, a.OrgID, objectID, defs, data); err != nil {
+		return "", err
+	}
+	view, err := s.insertRecord(ctx, a, objectID, action.Object, defs, data, sourceAutomation)
+	if err != nil {
+		return "", err
+	}
+	return view.ID, nil
+}
+
+func resolveActionData(data map[string]any, recordID string, record map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	for key, value := range data {
+		if field, ok := fieldRef(value); ok {
+			out[key] = record[field]
+			continue
+		}
+		if isRecordRef(value) {
+			if recordID == "" {
+				return nil, fmt.Errorf("invalid record")
+			}
+			out[key] = recordID
+			continue
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func matchConditions(conditions []condition, data map[string]any) (bool, error) {
+	for _, cond := range conditions {
+		value, ok := data[cond.Field]
+		if !ok || value == nil {
+			return false, nil
+		}
+		matched, err := compareCondition(cond.Op, value, cond.Value)
+		if err != nil || !matched {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func compareCondition(op string, left, right any) (bool, error) {
+	switch op {
+	case "eq":
+		return reflect.DeepEqual(left, right), nil
+	case "neq":
+		return !reflect.DeepEqual(left, right), nil
+	case "contains":
+		text, ok := left.(string)
+		needle, ok2 := right.(string)
+		if !ok || !ok2 {
+			return false, fmt.Errorf("invalid value")
+		}
+		return strings.Contains(strings.ToLower(text), strings.ToLower(needle)), nil
+	case "gt", "gte", "lt", "lte":
+		order, err := compareOrdered(left, right)
+		if err != nil {
+			return false, err
+		}
+		switch op {
+		case "gt":
+			return order > 0, nil
+		case "gte":
+			return order >= 0, nil
+		case "lt":
+			return order < 0, nil
+		default:
+			return order <= 0, nil
+		}
+	default:
+		return false, fmt.Errorf("invalid operator")
+	}
+}
+
+func compareOrdered(left, right any) (int, error) {
+	if a, ok := asFloat(left); ok {
+		b, ok := asFloat(right)
+		if !ok {
+			return 0, fmt.Errorf("invalid value")
+		}
+		switch {
+		case a < b:
+			return -1, nil
+		case a > b:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	}
+	a, aok := left.(string)
+	b, bok := right.(string)
+	if !aok || !bok {
+		return 0, fmt.Errorf("invalid value")
+	}
+	switch {
+	case a < b:
+		return -1, nil
+	case a > b:
+		return 1, nil
+	default:
+		return 0, nil
+	}
+}
+
+func asFloat(value any) (float64, bool) {
+	switch n := value.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case json.Number:
+		parsed, err := n.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func (s *server) recordExecution(ctx context.Context, orgID, automationID, eventID, status string, created []string) error {
+	if created == nil {
+		created = []string{}
+	}
+	raw, err := json.Marshal(created)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		insert into automation_executions
+			(id, organization_id, automation_id, event_id, status, created_ids)
+		values ($1, $2, $3, $4, $5, $6::jsonb)
+	`, uuid.NewString(), orgID, automationID, eventID, status, string(raw))
+	if isUnique(err) {
+		return nil
+	}
+	return err
+}

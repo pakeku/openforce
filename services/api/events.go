@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	sourceAPI   = "API"
-	sourceAdmin = "Admin"
+	sourceAPI        = "API"
+	sourceAdmin      = "Admin"
+	sourceAutomation = "Automation"
 )
 
 var eventNames = map[string]struct{}{
@@ -79,16 +80,19 @@ func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) er
 	if err != nil {
 		return err
 	}
-	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name)
+	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name, ev.ObjectID)
 }
 
-func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name string) error {
+func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID string) error {
 	if name == "field.changed" || name == "record.deleted" {
-		if err := enqueueJob(ctx, tx, orgID, eventID, "audit", ""); err != nil {
+		if err := enqueueJob(ctx, tx, orgID, eventID, "audit", "", ""); err != nil {
 			return err
 		}
 	}
-	return enqueueWebhookJobs(ctx, tx, orgID, eventID, name)
+	if err := enqueueWebhookJobs(ctx, tx, orgID, eventID, name); err != nil {
+		return err
+	}
+	return enqueueAutomationJobs(ctx, tx, orgID, eventID, name, objectID)
 }
 
 func uuidOrNil(id string) any {

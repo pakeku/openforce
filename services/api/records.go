@@ -54,7 +54,7 @@ func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	view, err := s.insertRecord(r.Context(), a, objectID, r.PathValue("name"), defs, data)
+	view, err := s.insertRecord(r.Context(), a, objectID, r.PathValue("name"), defs, data, sourceAPI)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -276,7 +276,7 @@ func (s *server) readRecord(r *http.Request, write bool) (recordView, error) {
 	return s.selectRecord(r.Context(), a.OrgID, objectID, r.PathValue("id"))
 }
 
-func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName string, defs []fieldDef, data map[string]any) (recordView, error) {
+func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName string, defs []fieldDef, data map[string]any, source string) (recordView, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return recordView{}, err
@@ -299,7 +299,7 @@ func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName
 		ActorID:  a.UserID,
 		ObjectID: objectID,
 		RecordID: id,
-		Source:   sourceAPI,
+		Source:   source,
 		Payload: map[string]any{
 			"object":  objectName,
 			"version": 1,
@@ -308,7 +308,7 @@ func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName
 	}); err != nil {
 		return recordView{}, err
 	}
-	if err := emitFieldChanges(ctx, tx, a.OrgID, a.UserID, objectID, id, objectName, sourceAPI, fieldChanges(defs, map[string]any{}, data)); err != nil {
+	if err := emitFieldChanges(ctx, tx, a.OrgID, a.UserID, objectID, id, objectName, source, fieldChanges(defs, map[string]any{}, data)); err != nil {
 		return recordView{}, err
 	}
 	if err := s.committed(ctx, tx); err != nil {

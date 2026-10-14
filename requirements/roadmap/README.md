@@ -119,6 +119,8 @@ Execution history
 
 **Goal.** Recreate about 80% of a simple workflow with Openforce's own primitives. The domain model stays Openforce's. n8n is the reference for what that simple case includes.
 
+A workflow definition can subscribe to `record.created`, `record.updated`, or `record.deleted`. The record request stores an automation job in that same transaction. `work` checks the conditions and, when they match, creates a record as the triggering user. Schedules and the other action types are still ahead.
+
 ## Phase 5. Integrations
 
 [Connector runtime](../integrations/connector-runtime/README.md), and the inbound half of [webhooks](../integrations/webhooks/README.md).

@@ -20,6 +20,7 @@ type dueJob struct {
 	Kind           string
 	Attempts       int
 	SubscriptionID string
+	AutomationID   string
 }
 
 type jobView struct {
@@ -33,11 +34,11 @@ type jobView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func enqueueJob(ctx context.Context, tx pgx.Tx, orgID, eventID, kind, subscriptionID string) error {
+func enqueueJob(ctx context.Context, tx pgx.Tx, orgID, eventID, kind, subscriptionID, automationID string) error {
 	_, err := tx.Exec(ctx, `
-		insert into jobs (id, organization_id, event_id, kind, subscription_id)
-		values ($1, $2, $3, $4, $5)
-	`, uuid.NewString(), orgID, eventID, kind, uuidOrNil(subscriptionID))
+		insert into jobs (id, organization_id, event_id, kind, subscription_id, automation_id)
+		values ($1, $2, $3, $4, $5, $6)
+	`, uuid.NewString(), orgID, eventID, kind, uuidOrNil(subscriptionID), uuidOrNil(automationID))
 	return err
 }
 
@@ -55,7 +56,7 @@ func (s *server) deliverJobs(ctx context.Context) (int, error) {
 
 func (s *server) deliverJobBatch(ctx context.Context, limit int) (int, int, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id::text, organization_id::text, event_id::text, kind, attempts, subscription_id::text
+		select id::text, organization_id::text, event_id::text, kind, attempts, subscription_id::text, automation_id::text
 		from jobs
 		where status = 'pending' and run_at <= now()
 		order by created_at, id
@@ -68,12 +69,15 @@ func (s *server) deliverJobBatch(ctx context.Context, limit int) (int, int, erro
 	jobs := []dueJob{}
 	for rows.Next() {
 		var job dueJob
-		var subscriptionID sql.NullString
-		if err := rows.Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts, &subscriptionID); err != nil {
+		var subscriptionID, automationID sql.NullString
+		if err := rows.Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts, &subscriptionID, &automationID); err != nil {
 			return 0, 0, err
 		}
 		if subscriptionID.Valid {
 			job.SubscriptionID = subscriptionID.String
+		}
+		if automationID.Valid {
+			job.AutomationID = automationID.String
 		}
 		jobs = append(jobs, job)
 	}
@@ -112,6 +116,8 @@ func (s *server) runJob(ctx context.Context, job dueJob) error {
 		return err
 	case "webhook":
 		return s.deliverWebhook(ctx, job)
+	case "automation":
+		return s.runAutomation(ctx, job)
 	default:
 		return fmt.Errorf("unknown job kind %s", job.Kind)
 	}

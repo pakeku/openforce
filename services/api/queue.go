@@ -185,12 +185,12 @@ func (s *server) finishQueued(ctx context.Context, msg redis.XMessage) (bool, er
 
 func (s *server) pendingJob(ctx context.Context, id string) (dueJob, bool, error) {
 	var job dueJob
-	var subscriptionID sql.NullString
+	var subscriptionID, automationID sql.NullString
 	err := s.pool.QueryRow(ctx, `
-		select id::text, organization_id::text, event_id::text, kind, attempts, subscription_id::text
+		select id::text, organization_id::text, event_id::text, kind, attempts, subscription_id::text, automation_id::text
 		from jobs
 		where id = $1::uuid and status = 'pending'
-	`, id).Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts, &subscriptionID)
+	`, id).Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts, &subscriptionID, &automationID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return dueJob{}, false, nil
 	}
@@ -199,6 +199,9 @@ func (s *server) pendingJob(ctx context.Context, id string) (dueJob, bool, error
 	}
 	if subscriptionID.Valid {
 		job.SubscriptionID = subscriptionID.String
+	}
+	if automationID.Valid {
+		job.AutomationID = automationID.String
 	}
 	return job, true, nil
 }
