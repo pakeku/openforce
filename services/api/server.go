@@ -39,6 +39,7 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("GET /api/objects/{name}", s.requireAuth(s.listRecords))
 	mux.HandleFunc("POST /api/objects/{name}", s.requireAuth(s.createRecord))
 	mux.HandleFunc("GET /api/objects/{name}/{id}", s.requireAuth(s.getRecord))
+	mux.HandleFunc("GET /api/objects/{name}/{id}/audit", s.requireAuth(s.listAudit))
 	mux.HandleFunc("PATCH /api/objects/{name}/{id}", s.requireAuth(s.patchRecord))
 	mux.HandleFunc("DELETE /api/objects/{name}/{id}", s.requireAuth(s.deleteRecord))
 	mux.HandleFunc("GET /api/objects/{name}/{id}/related/{rel}", s.requireAuth(s.listRelated))

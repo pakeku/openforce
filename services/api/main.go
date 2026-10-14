@@ -18,8 +18,10 @@ func main() {
 			os.Exit(runMigrate())
 		case "seed":
 			os.Exit(runSeed(os.Args[2:]))
+		case "work":
+			os.Exit(runWork())
 		default:
-			fmt.Fprintln(os.Stderr, "usage: api [migrate|seed]")
+			fmt.Fprintln(os.Stderr, "usage: api [migrate|seed|work]")
 			os.Exit(2)
 		}
 	}
@@ -66,6 +68,23 @@ func openPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	}
 	cfg.ConnConfig.RuntimeParams["client_encoding"] = "UTF8"
 	return pgxpool.NewWithConfig(ctx, cfg)
+}
+
+func runWork() int {
+	ctx := context.Background()
+	pool, err := openPool(ctx, databaseURL())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer pool.Close()
+	n, err := (&server{pool: pool}).deliverAudit(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("delivered %d\n", n)
+	return 0
 }
 
 func runServer() int {
