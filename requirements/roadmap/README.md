@@ -102,7 +102,7 @@ Webhooks
 
 **Goal.** Every meaningful mutation produces a reliable event.
 
-Event persistence, jobs, and audit delivery have started in `services/api`. A committed change writes the event in that same transaction, and a field change or deletion also stores an audit job. `work` completes due jobs and records a dead letter after repeated failure. Redis and webhooks are still ahead.
+Event persistence, jobs, audit, and outbound webhooks have started in `services/api`. A committed change writes the event in that same transaction. `work` completes audit jobs and signed webhook deliveries, and records a dead letter after repeated failure. Redis and inbound webhooks are still ahead.
 
 ## Phase 4. Automation
 

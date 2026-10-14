@@ -79,10 +79,16 @@ func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) er
 	if err != nil {
 		return err
 	}
-	if ev.Name == "field.changed" || ev.Name == "record.deleted" {
-		return enqueueJob(ctx, tx, orgID, eventID, "audit")
+	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name)
+}
+
+func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name string) error {
+	if name == "field.changed" || name == "record.deleted" {
+		if err := enqueueJob(ctx, tx, orgID, eventID, "audit", ""); err != nil {
+			return err
+		}
 	}
-	return nil
+	return enqueueWebhookJobs(ctx, tx, orgID, eventID, name)
 }
 
 func uuidOrNil(id string) any {

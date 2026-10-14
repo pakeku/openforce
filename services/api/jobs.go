@@ -14,11 +14,12 @@ import (
 const maxJobAttempts = 5
 
 type dueJob struct {
-	ID       string
-	OrgID    string
-	EventID  string
-	Kind     string
-	Attempts int
+	ID             string
+	OrgID          string
+	EventID        string
+	Kind           string
+	Attempts       int
+	SubscriptionID string
 }
 
 type jobView struct {
@@ -32,11 +33,11 @@ type jobView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func enqueueJob(ctx context.Context, tx pgx.Tx, orgID, eventID, kind string) error {
+func enqueueJob(ctx context.Context, tx pgx.Tx, orgID, eventID, kind, subscriptionID string) error {
 	_, err := tx.Exec(ctx, `
-		insert into jobs (id, organization_id, event_id, kind)
-		values ($1, $2, $3, $4)
-	`, uuid.NewString(), orgID, eventID, kind)
+		insert into jobs (id, organization_id, event_id, kind, subscription_id)
+		values ($1, $2, $3, $4, $5)
+	`, uuid.NewString(), orgID, eventID, kind, uuidOrNil(subscriptionID))
 	return err
 }
 
@@ -54,7 +55,7 @@ func (s *server) deliverJobs(ctx context.Context) (int, error) {
 
 func (s *server) deliverJobBatch(ctx context.Context, limit int) (int, int, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id::text, organization_id::text, event_id::text, kind, attempts
+		select id::text, organization_id::text, event_id::text, kind, attempts, subscription_id::text
 		from jobs
 		where status = 'pending' and run_at <= now()
 		order by created_at, id
@@ -67,8 +68,12 @@ func (s *server) deliverJobBatch(ctx context.Context, limit int) (int, int, erro
 	jobs := []dueJob{}
 	for rows.Next() {
 		var job dueJob
-		if err := rows.Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts); err != nil {
+		var subscriptionID sql.NullString
+		if err := rows.Scan(&job.ID, &job.OrgID, &job.EventID, &job.Kind, &job.Attempts, &subscriptionID); err != nil {
 			return 0, 0, err
+		}
+		if subscriptionID.Valid {
+			job.SubscriptionID = subscriptionID.String
 		}
 		jobs = append(jobs, job)
 	}
@@ -105,6 +110,8 @@ func (s *server) runJob(ctx context.Context, job dueJob) error {
 		}
 		_, err = s.insertAudit(ctx, ev)
 		return err
+	case "webhook":
+		return s.deliverWebhook(ctx, job)
 	default:
 		return fmt.Errorf("unknown job kind %s", job.Kind)
 	}

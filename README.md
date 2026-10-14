@@ -52,7 +52,7 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion also stores a job, and a separate `work` command completes it into the audit log. Redis and automation come in later phases.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion stores an audit job, a webhook subscription stores a delivery job, and a separate `work` command completes both. Redis and automation come in later phases.
 
 ## Run the kernel
 
@@ -94,6 +94,9 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `POST /api/objects/{name}/{id}/related/{relationship}` | Links a many-to-many record. Body is `{"id":"..."}`. |
 | `GET /api/events` | Events for the caller's organization, oldest first. |
 | `GET /api/jobs` | Jobs for the caller's organization. `status` is `pending`, `done`, or `dead`. `event` is one event id. |
+| `POST /api/webhooks` | Owner subscribes a URL to event names. The secret is returned once. |
+| `GET /api/webhooks` | Subscriptions in the caller's organization, without secrets. |
+| `DELETE /api/webhooks/{id}` | Owner removes a subscription. |
 | `GET /api/objects/{name}/{id}/audit` | Field history for one record, including a deleted record. |
 
 Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant.
@@ -102,7 +105,9 @@ A list accepts repeatable `filter` and `sort` parameters, such as `filter=indust
 
 A committed change also writes an event in that same transaction. Record creates, updates, and deletes emit `record.created`, `record.updated`, and `record.deleted`. A field that actually changes also emits `field.changed` with the previous value and the new one. Creating an object emits `object.created`, and creating a user emits `user.created`. `GET /api/events` accepts `name`, `record`, `after` (a sequence number), and `limit`. Record and field events are visible to the owner and to a member who can read that object. The other catalog names are visible to every member of the organization.
 
-The request does not write the audit log. A field change or a deletion stores an audit job in the same transaction as the event. `go run -C services/api . work` completes due jobs and then exits. A job that fails waits longer before the next try, and after 5 attempts it is marked dead. `GET /api/jobs` lists the caller's jobs. `GET /api/objects/{name}/{id}/audit` returns the field history in event order, including after the record is deleted.
+The request does not write the audit log or call a webhook. A field change or a deletion stores an audit job in the same transaction as the event. A webhook subscription stores a delivery job for each matching event in that same transaction. `go run -C services/api . work` completes due jobs and then exits. A job that fails waits longer before the next try, and after 5 attempts it is marked dead. `GET /api/jobs` lists the caller's jobs. `GET /api/objects/{name}/{id}/audit` returns the field history in event order, including after the record is deleted.
+
+`POST /api/webhooks` takes `{"url":"https://example.com/hook","events":["record.created"]}`. `work` POSTs the event as JSON. The header `X-Openforce-Signature` is `sha256=` plus the hex HMAC-SHA256 of the raw body, keyed by the subscription secret. A response outside 2xx fails the job.
 
 ## Work with records
 
