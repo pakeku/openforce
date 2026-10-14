@@ -101,6 +101,11 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `GET /api/inbound` | Inbound endpoints in the caller's organization, without secrets. |
 | `DELETE /api/inbound/{name}` | Owner removes an inbound endpoint. |
 | `POST /api/hooks/{id}` | Signed body becomes a record. No bearer token. |
+| `POST /api/credentials` | Owner stores an `api_key` or `oauth` credential. The secret is not returned. |
+| `GET /api/credentials` | Credential names in the caller's organization, without secrets. |
+| `PATCH /api/credentials/{name}` | Owner replaces an API key, or an OAuth client secret or refresh token. |
+| `POST /api/credentials/{name}/refresh` | Owner exchanges an OAuth refresh token for a new access token. |
+| `DELETE /api/credentials/{name}` | Owner removes a credential. |
 | `GET /api/objects/{name}/{id}/audit` | Field history for one record, including a deleted record. |
 | `POST /api/automations` | Owner defines a workflow on a record event. |
 | `GET /api/automations` | Workflows in the caller's organization. |
@@ -119,6 +124,8 @@ The request does not write the audit log or call a webhook. A field change or a 
 `POST /api/webhooks` takes `{"url":"https://example.com/hook","events":["record.created"]}`. `work` POSTs the event as JSON. The header `X-Openforce-Signature` is `sha256=` plus the hex HMAC-SHA256 of the raw body, keyed by the subscription secret. A response outside 2xx fails the job.
 
 `POST /api/inbound` takes `{"name":"leads","object":"company"}` and returns a secret once. `POST /api/hooks/{id}` reads that same header. A matching signature creates a record as the owner who registered the endpoint, with source `Integration`. The body is the field values. A workflow on `record.created` sees that record when `work` runs. A wrong signature is rejected and stores nothing.
+
+`POST /api/credentials` stores a secret for the organization. An `api_key` body is `{"name":"stripe","label":"Stripe","kind":"api_key","secret":"..."}`. An `oauth` body also sends `token_url`, `client_id`, `client_secret`, and `refresh_token`. List and get return the name, label, and kind. They never return the secret, the client secret, the refresh token, or the access token. `POST /api/credentials/{name}/refresh` sends the refresh token to `token_url` and stores the new access token. A failed refresh leaves the stored credential unchanged.
 
 `POST /api/automations` takes a name, a label, an event (`record.created`, `record.updated`, or `record.deleted`), an object, conditions, and actions. Conditions use the same operators as a list filter and are combined with and. Actions are `create`, `update`, `delete`, and `http`. A value `{"field":"name"}` copies a field from the triggering record, and `{"record":true}` copies that record's id. An `http` action POSTs JSON to a URL. With `data` set, that object is the body after those references are filled in. Without `data`, the body carries the event name, the object, the record id, and the record. A response outside 2xx fails the job. A workflow can run on a schedule instead of a record event. `every` is at least one minute, written as `15m`, `1h`, or `1d`. `work` stores a `schedule.tick` event and runs that workflow when the time arrives, then sets the next run. A schedule can create a record or POST JSON. Update and delete stay on record events, because a schedule has no triggering record. `update` and `delete` change the triggering record unless `record` points at another one. The record request stores an automation job in the same transaction as the event. `work` checks the conditions and runs the actions as the user who caused the event. A miss is an execution with status `skipped`. A finished run is `done`. The policy check still applies to each write. A workflow does not enqueue itself for the write its own action just committed.
 
