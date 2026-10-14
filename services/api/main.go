@@ -119,10 +119,13 @@ func workSession(stop context.Context, once bool) int {
 	return keepWorking(stop, s)
 }
 
-// drainJobs is one pass: schedules, then publish, then the stream, then Postgres.
+// drainJobs is one pass: schedules and connectors, then publish, then the stream, then Postgres.
 // block is the stream read timeout. Negative skips the wait. It must not be 0.
 func (s *server) drainJobs(ctx context.Context, block time.Duration) (int, error) {
 	if _, err := s.enqueueDueSchedules(ctx); err != nil {
+		return 0, err
+	}
+	if _, err := s.enqueueDueConnectors(ctx); err != nil {
 		return 0, err
 	}
 	if err := s.publishDueJobs(ctx); err != nil {

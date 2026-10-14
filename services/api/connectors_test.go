@@ -5,8 +5,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestConnectorSyncWritesRecords(t *testing.T) {
@@ -219,6 +221,207 @@ func indexOf(body, part string) int {
 		}
 	}
 	return -1
+}
+
+func TestConnectorClockSyncsOnce(t *testing.T) {
+	var mu sync.Mutex
+	var clockHits, manualHits int
+	clock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		clockHits++
+		mu.Unlock()
+		_, _ = io.WriteString(w, `[{"id":"ext-1","company_name":"Acme","headcount":3,"sector":"SaaS"}]`)
+	}))
+	defer clock.Close()
+	manualRemote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		manualHits++
+		mu.Unlock()
+		_, _ = io.WriteString(w, `[{"id":"ext-9","company_name":"Manual Co","headcount":1,"sector":"Finance"}]`)
+	}))
+	defer manualRemote.Close()
+
+	token := newOwner(t, "Connector Clock", "connector-clock-owner@example.com")
+	orgID := orgOf(t, token)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			delete from jobs where organization_id = $1::uuid and status = 'pending'
+		`, orgID)
+		_, _ = testPool.Exec(context.Background(), `
+			delete from connector_syncs where organization_id = $1::uuid
+		`, orgID)
+	})
+	postObject(t, token, companyObject())
+	member, err := (&server{pool: testPool}).addMember(context.Background(), orgID, "Mia", "connector-clock-member@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := apiDo(t, http.MethodPost, "/api/credentials", token, map[string]any{
+		"name": "stripe", "label": "Stripe", "kind": "api_key", "secret": "sk_clock_123",
+	})
+	requireStatus(t, rec, http.StatusCreated)
+
+	body := map[string]any{
+		"name": "contacts", "label": "Contacts", "credential": "stripe", "object": "company",
+		"url": clock.URL, "external_id": "id",
+		"mapping": map[string]string{"company_name": "name", "headcount": "employees", "sector": "industry"},
+	}
+	memberBody := map[string]any{
+		"name": "contacts", "label": "Contacts", "credential": "stripe", "object": "company",
+		"url": clock.URL, "external_id": "id", "every": "15m",
+		"mapping": map[string]string{"company_name": "name"},
+	}
+	rec = apiDo(t, http.MethodPost, "/api/connectors", member, memberBody)
+	requireStatus(t, rec, http.StatusForbidden)
+	if errorOf(t, rec) != "forbidden" {
+		t.Fatalf("member %s", rec.Body.String())
+	}
+	for _, every := range []string{"1s", "0m", "367d", "15"} {
+		bad := map[string]any{
+			"name": "contacts", "label": "Contacts", "credential": "stripe", "object": "company",
+			"url": clock.URL, "external_id": "id", "every": every,
+			"mapping": map[string]string{"company_name": "name"},
+		}
+		rec = apiDo(t, http.MethodPost, "/api/connectors", token, bad)
+		requireStatus(t, rec, http.StatusBadRequest)
+		if errorOf(t, rec) != "invalid schedule" {
+			t.Fatalf("every %s: %s", every, rec.Body.String())
+		}
+	}
+
+	manualBody := map[string]any{
+		"name": "manual", "label": "Manual", "credential": "stripe", "object": "company",
+		"url": manualRemote.URL, "external_id": "id",
+		"mapping": map[string]string{"company_name": "name", "headcount": "employees", "sector": "industry"},
+	}
+	rec = apiDo(t, http.MethodPost, "/api/connectors", token, manualBody)
+	requireStatus(t, rec, http.StatusCreated)
+	if strings.Contains(rec.Body.String(), `"every"`) || strings.Contains(rec.Body.String(), `"next_run_at"`) {
+		t.Fatalf("manual create stored a clock %s", rec.Body.String())
+	}
+	rec = apiDo(t, http.MethodGet, "/api/connectors/manual", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var manual connectorView
+	mustJSON(t, rec, &manual)
+	if manual.Every != "" || manual.NextRun != nil || strings.Contains(rec.Body.String(), `"every"`) || strings.Contains(rec.Body.String(), `"next_run_at"`) {
+		t.Fatalf("manual get %s", rec.Body.String())
+	}
+
+	body["every"] = "15m"
+	rec = apiDo(t, http.MethodPost, "/api/connectors", token, body)
+	requireStatus(t, rec, http.StatusCreated)
+	var created connectorView
+	mustJSON(t, rec, &created)
+	if created.Every != "15m" || created.NextRun == nil || created.NextRun.After(time.Now().Add(2*time.Second)) {
+		t.Fatalf("created %+v", created)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/connectors/contacts", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var got connectorView
+	mustJSON(t, rec, &got)
+	if got.Every != "15m" || got.NextRun == nil || got.NextRun.After(time.Now().Add(2*time.Second)) {
+		t.Fatalf("get %+v", got)
+	}
+
+	t.Setenv("DATABASE_URL", testURL)
+	t.Setenv("REDIS_URL", "")
+	if code, out := runWorkCaptured(t); code != 0 {
+		t.Fatalf("work %d\n%s", code, out)
+	}
+	mu.Lock()
+	if clockHits != 1 || manualHits != 0 {
+		t.Fatalf("hits clock %d manual %d", clockHits, manualHits)
+	}
+	mu.Unlock()
+	rows := listRecords(t, token, "company", "")
+	if len(rows) != 1 || rows[0].Data["name"] != "Acme" || rows[0].Version != 1 {
+		t.Fatalf("rows %+v", rows)
+	}
+	syncs := listEvents(t, token, "name=sync.requested")
+	if len(syncs) != 1 || syncs[0].Payload["connector"] != "contacts" || syncs[0].ActorID != userOf(t, token) || syncs[0].Source != "API" {
+		t.Fatalf("sync %+v", syncs)
+	}
+	done := listJobs(t, token, "event="+syncs[0].ID)
+	if len(done) != 1 || done[0].Kind != "connector" || done[0].Status != "done" || done[0].LastError != nil {
+		t.Fatalf("job %+v", done)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/connectors/contacts", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &got)
+	if got.Every != "15m" || got.NextRun == nil || !got.NextRun.After(time.Now().Add(14*time.Minute)) {
+		t.Fatalf("next %+v", got.NextRun)
+	}
+	next := *got.NextRun
+
+	if code, out := runWorkCaptured(t); code != 0 {
+		t.Fatalf("second work %d\n%s", code, out)
+	}
+	mu.Lock()
+	if clockHits != 1 || manualHits != 0 {
+		t.Fatalf("second hits clock %d manual %d", clockHits, manualHits)
+	}
+	mu.Unlock()
+	rows = listRecords(t, token, "company", "")
+	if len(rows) != 1 || rows[0].Version != 1 {
+		t.Fatalf("second rows %+v", rows)
+	}
+	if len(listEvents(t, token, "name=sync.requested")) != 1 {
+		t.Fatal("second pass stored another sync")
+	}
+	rec = apiDo(t, http.MethodGet, "/api/connectors/contacts", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &got)
+	if got.NextRun == nil || !got.NextRun.Equal(next) {
+		t.Fatalf("clock moved %+v want %s", got.NextRun, next)
+	}
+
+	rec = apiDo(t, http.MethodPost, "/api/connectors/manual/sync", token, nil)
+	requireStatus(t, rec, http.StatusAccepted)
+	if code, out := runWorkCaptured(t); code != 0 {
+		t.Fatalf("manual work %d\n%s", code, out)
+	}
+	mu.Lock()
+	if clockHits != 1 || manualHits != 1 {
+		t.Fatalf("manual hits clock %d manual %d", clockHits, manualHits)
+	}
+	mu.Unlock()
+	rows = listRecords(t, token, "company", "")
+	if len(rows) != 2 {
+		t.Fatalf("manual rows %+v", rows)
+	}
+	var sawAcme, sawManual bool
+	for _, row := range rows {
+		if row.Data["name"] == "Acme" && row.Version == 1 {
+			sawAcme = true
+		}
+		if row.Data["name"] == "Manual Co" {
+			sawManual = true
+		}
+	}
+	if !sawAcme || !sawManual {
+		t.Fatalf("rows %+v", rows)
+	}
+	syncs = listEvents(t, token, "name=sync.requested")
+	if len(syncs) != 2 {
+		t.Fatalf("syncs %+v", syncs)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/connectors/contacts", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &got)
+	if got.NextRun == nil || !got.NextRun.Equal(next) {
+		t.Fatalf("manual pass moved the clock %+v", got.NextRun)
+	}
+
+	var due int
+	if err := testPool.QueryRow(context.Background(), `
+		select count(*) from jobs
+		where organization_id = $1::uuid and status = 'pending' and run_at <= now()
+	`, orgID).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due != 0 {
+		t.Fatalf("left %d due jobs", due)
+	}
 }
 
 func releaseConnectorJobs(t *testing.T, orgID string) {

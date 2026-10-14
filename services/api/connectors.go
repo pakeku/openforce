@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,6 +22,7 @@ type connectorInput struct {
 	URL        string            `json:"url"`
 	ExternalID string            `json:"external_id"`
 	Mapping    map[string]string `json:"mapping"`
+	Every      string            `json:"every"`
 }
 
 type connectorView struct {
@@ -31,6 +34,8 @@ type connectorView struct {
 	URL        string            `json:"url"`
 	ExternalID string            `json:"external_id"`
 	Mapping    map[string]string `json:"mapping"`
+	Every      string            `json:"every,omitempty"`
+	NextRun    *time.Time        `json:"next_run_at,omitempty"`
 }
 
 type connectorSync struct {
@@ -56,6 +61,11 @@ func (s *server) createConnector(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	everySeconds, err := parseEvery(body.Every)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	credentialID, objectID, err := s.validateConnector(r.Context(), a.OrgID, body)
 	if err != nil {
 		writeErr(w, err)
@@ -70,11 +80,23 @@ func (s *server) createConnector(w http.ResponseWriter, r *http.Request) {
 		ID: uuid.NewString(), Name: body.Name, Label: body.Label, Credential: body.Credential,
 		Object: body.Object, URL: body.URL, ExternalID: body.ExternalID, Mapping: body.Mapping,
 	}
-	_, err = s.pool.Exec(r.Context(), `
-		insert into connector_syncs
-			(id, organization_id, name, label, credential_id, object_id, url, external_id, mapping, actor_id)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
-	`, view.ID, a.OrgID, view.Name, view.Label, credentialID, objectID, view.URL, view.ExternalID, string(raw), a.UserID)
+	if everySeconds > 0 {
+		view.Every = formatEvery(everySeconds)
+		var when time.Time
+		err = s.pool.QueryRow(r.Context(), `
+			insert into connector_syncs
+				(id, organization_id, name, label, credential_id, object_id, url, external_id, mapping, actor_id, every_seconds, next_run_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, now())
+			returning next_run_at
+		`, view.ID, a.OrgID, view.Name, view.Label, credentialID, objectID, view.URL, view.ExternalID, string(raw), a.UserID, everySeconds).Scan(&when)
+		view.NextRun = &when
+	} else {
+		_, err = s.pool.Exec(r.Context(), `
+			insert into connector_syncs
+				(id, organization_id, name, label, credential_id, object_id, url, external_id, mapping, actor_id)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+		`, view.ID, a.OrgID, view.Name, view.Label, credentialID, objectID, view.URL, view.ExternalID, string(raw), a.UserID)
+	}
 	if isUnique(err) {
 		writeErr(w, apiErr(http.StatusConflict, "connector already exists"))
 		return
@@ -89,7 +111,8 @@ func (s *server) createConnector(w http.ResponseWriter, r *http.Request) {
 func (s *server) listConnectors(w http.ResponseWriter, r *http.Request) {
 	a := actorFrom(r.Context())
 	rows, err := s.pool.Query(r.Context(), `
-		select s.id::text, s.name, s.label, c.name, o.name, s.url, s.external_id, s.mapping
+		select s.id::text, s.name, s.label, c.name, o.name, s.url, s.external_id, s.mapping,
+			s.every_seconds, s.next_run_at
 		from connector_syncs s
 		join credentials c on c.id = s.credential_id
 		join object_definitions o on o.id = s.object_id
@@ -367,7 +390,8 @@ func (s *server) validateConnector(ctx context.Context, orgID string, body conne
 
 func (s *server) loadConnectorView(ctx context.Context, orgID, name string) (connectorView, error) {
 	row := s.pool.QueryRow(ctx, `
-		select s.id::text, s.name, s.label, c.name, o.name, s.url, s.external_id, s.mapping
+		select s.id::text, s.name, s.label, c.name, o.name, s.url, s.external_id, s.mapping,
+			s.every_seconds, s.next_run_at
 		from connector_syncs s
 		join credentials c on c.id = s.credential_id
 		join object_definitions o on o.id = s.object_id
@@ -404,8 +428,17 @@ func (s *server) loadConnectorSync(ctx context.Context, orgID, name string) (con
 func scanConnector(row pgx.Row) (connectorView, error) {
 	var view connectorView
 	var raw []byte
-	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Credential, &view.Object, &view.URL, &view.ExternalID, &raw); err != nil {
+	var every sql.NullInt32
+	var next sql.NullTime
+	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Credential, &view.Object, &view.URL, &view.ExternalID, &raw, &every, &next); err != nil {
 		return view, err
+	}
+	if every.Valid {
+		view.Every = formatEvery(int(every.Int32))
+	}
+	if next.Valid {
+		when := next.Time
+		view.NextRun = &when
 	}
 	view.Mapping = map[string]string{}
 	if len(raw) > 0 {
@@ -414,4 +447,80 @@ func scanConnector(row pgx.Row) (connectorView, error) {
 		}
 	}
 	return view, nil
+}
+
+// enqueueDueConnectors stores a sync for each connector whose clock has arrived.
+// The request that defined the connector does not run it.
+func (s *server) enqueueDueConnectors(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := s.enqueueConnectorBatch(ctx, 100)
+		total += n
+		if err != nil || n == 0 {
+			return total, err
+		}
+	}
+}
+
+func (s *server) enqueueConnectorBatch(ctx context.Context, limit int) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		select id::text, organization_id::text, name, actor_id::text
+		from connector_syncs
+		where every_seconds is not null and next_run_at <= now()
+		order by next_run_at, id
+		limit $1
+		for update skip locked
+	`, limit)
+	if err != nil {
+		return 0, err
+	}
+	type dueConnector struct {
+		id, org, name, actor string
+	}
+	due := []dueConnector{}
+	for rows.Next() {
+		var item dueConnector
+		if err := rows.Scan(&item.id, &item.org, &item.name, &item.actor); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		due = append(due, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+	for _, item := range due {
+		eventID, err := insertEvent(ctx, tx, item.org, eventWrite{
+			Name:    "sync.requested",
+			ActorID: item.actor,
+			Source:  sourceAPI,
+			Payload: map[string]any{"connector": item.name},
+		})
+		if err != nil {
+			return 0, err
+		}
+		if err := enqueueJob(ctx, tx, item.org, eventID, "connector", "", ""); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `
+			update connector_syncs
+			set next_run_at = now() + make_interval(secs => every_seconds)
+			where id = $1::uuid
+		`, item.id); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(due), nil
 }

@@ -139,7 +139,7 @@ Rate limiting
 
 **Goal.** External systems become another source and sink of events and records.
 
-An owner can register an inbound endpoint for an object. `POST /api/hooks/{id}` with `X-Openforce-Signature` creates a record as that owner, with source `Integration`, and a workflow on `record.created` sees it. An owner can store an `api_key` or `oauth` credential. The API does not return the secret, and a refresh exchanges the OAuth refresh token for a new access token. A connector sync GETs a JSON array with that credential and creates or updates records as `Integration`. A clock that runs the sync, richer mapping, and rate limits are still ahead.
+An owner can register an inbound endpoint for an object. `POST /api/hooks/{id}` with `X-Openforce-Signature` creates a record as that owner, with source `Integration`, and a workflow on `record.created` sees it. An owner can store an `api_key` or `oauth` credential. The API does not return the secret, and a refresh exchanges the OAuth refresh token for a new access token. A connector sync GETs a JSON array with that credential and creates or updates records as `Integration`. A connector with `every`, such as `15m`, syncs when `work` drains due jobs, and richer mapping and rate limits are still ahead.
 
 ## Phase 6. Developer platform
 
