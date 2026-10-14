@@ -5,7 +5,7 @@ import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefor
 
 const events = ["record.created", "record.updated", "record.deleted"]
 const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains"]
-const actionTypes = ["create", "update", "delete", "http"]
+const actionTypes = ["create", "update", "delete", "http", "approval"]
 
 const nodeTypes = {
   trigger: TriggerNode,
@@ -143,7 +143,9 @@ export function Flows({ token }) {
     const id = `${kind}-${crypto.randomUUID()}`
     const data = kind === "condition"
       ? { field: "", op: "eq", value: "" }
-      : { type: "create", object: editor.object, url: "", recordMode: "", recordField: "", rows: [], ...(kind === "else" ? { path: "else" } : {}) }
+      : kind === "approval"
+        ? { type: "approval", object: "", url: "", user: "", recordMode: "", recordField: "", rows: [] }
+        : { type: "create", object: editor.object, url: "", user: "", recordMode: "", recordField: "", rows: [], ...(kind === "else" ? { path: "else" } : {}) }
     const node = { id, type: kind === "condition" ? "condition" : "action", data }
     const graph = kind === "condition"
       ? insertBefore(editor.nodes, editor.edges, node, "action")
@@ -300,7 +302,7 @@ export function Flows({ token }) {
           </ReactFlow>
         </div>
         <form className="panel" onSubmit={save}>
-          <p className="empty">Conditions run first. A match follows the actions. A miss follows the other path.</p>
+          <p className="empty">Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path.</p>
           {selected?.type === "trigger" && (
             <>
               <h2>Trigger</h2>
@@ -355,6 +357,7 @@ export function Flows({ token }) {
           <div className="actions">
             {!schedule && <button type="button" className="secondary" onClick={() => addStep("condition")}>Add condition</button>}
             <button type="button" className="secondary" onClick={() => addStep("action")}>Add action</button>
+            <button type="button" className="secondary" onClick={() => addStep("approval")}>Add approval</button>
             {!schedule && <button type="button" className="secondary" onClick={() => addStep("else")}>Add else</button>}
             <button>Save</button>
           </div>
@@ -412,14 +415,19 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
   }
   return (
     <>
-      <h2>{data.path === "else" ? "Else" : "Action"}</h2>
+      <h2>{data.path === "else" ? "Else" : data.type === "approval" ? "Approval" : "Action"}</h2>
       <label>
         Type
         <select value={data.type} onChange={(event) => patch({ type: event.target.value })}>
           {actionTypes.map((type) => <option key={type}>{type}</option>)}
         </select>
       </label>
-      {data.type === "http" ? (
+      {data.type === "approval" ? (
+        <label>
+          User
+          <input type="email" value={data.user || ""} onChange={(event) => patch({ user: event.target.value })} placeholder="member@example.com" />
+        </label>
+      ) : data.type === "http" ? (
         <label>
           URL
           <input value={data.url} onChange={(event) => patch({ url: event.target.value })} />
@@ -433,7 +441,7 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
           </select>
         </label>
       )}
-      {data.type !== "http" && data.type !== "create" && (
+      {data.type !== "http" && data.type !== "create" && data.type !== "approval" && (
         <label>
           Record
           <select
@@ -445,13 +453,13 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
           </select>
         </label>
       )}
-      {data.recordMode === "field" && (
+      {data.recordMode === "field" && data.type !== "approval" && (
         <label>
           Field on the triggering record
           <input value={data.recordField} onChange={(event) => patch({ recordField: event.target.value })} />
         </label>
       )}
-      {data.type !== "delete" && data.rows.map((row, index) => (
+      {data.type !== "delete" && data.type !== "approval" && data.rows.map((row, index) => (
         <div className="field-row" key={index}>
           <input aria-label="Value field" value={row.field} onChange={(event) => patchRow(index, { field: event.target.value })} placeholder="field" />
           <select aria-label="Value mode" value={row.mode} onChange={(event) => patchRow(index, { mode: event.target.value })}>
@@ -464,7 +472,7 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
           )}
         </div>
       ))}
-      {data.type !== "delete" && (
+      {data.type !== "delete" && data.type !== "approval" && (
         <button type="button" className="secondary" onClick={() => patch({ rows: [...data.rows, { field: "", mode: "literal", value: "" }] })}>Add value</button>
       )}
       <button type="button" className="secondary" onClick={onDelete}>Delete step</button>
@@ -498,12 +506,14 @@ function ConditionNode({ data }) {
 }
 
 function ActionNode({ data }) {
-  const detail = data.type === "http" ? data.url || "URL" : data.object || "This record"
+  const detail = data.type === "http" ? data.url || "URL" : data.type === "approval" ? data.user || "User" : data.object || "This record"
   const other = data.path === "else"
+  const approval = !other && data.type === "approval"
+  const className = other ? "flow-node else" : approval ? "flow-node approval" : "flow-node action"
   return (
-    <div className={other ? "flow-node else" : "flow-node action"}>
+    <div className={className}>
       <Handle type="target" position={Position.Top} />
-      <div className="flow-kind">{other ? "Else" : "Action"}</div>
+      <div className="flow-kind">{other ? "Else" : approval ? "Approval" : "Action"}</div>
       <strong>{data.type}</strong>
       <div>{detail}</div>
       <Handle type="source" position={Position.Bottom} />

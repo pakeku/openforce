@@ -366,7 +366,7 @@ func (s *server) prepareAutomation(ctx context.Context, orgID string, body *auto
 		if body.Event != "" || body.Object != "" || len(body.Conditions) > 0 || len(body.Else) > 0 {
 			return automationPlan{}, apiErr(http.StatusBadRequest, "invalid schedule")
 		}
-		if err := s.validateActions(ctx, orgID, "", map[string]fieldDef{}, body.Actions); err != nil {
+		if err := s.validateActions(ctx, orgID, "", map[string]fieldDef{}, body.Actions, true); err != nil {
 			return automationPlan{}, err
 		}
 		return automationPlan{Every: every}, nil
@@ -397,11 +397,11 @@ func (s *server) prepareAutomation(ctx context.Context, orgID string, body *auto
 			return automationPlan{}, err
 		}
 	}
-	if err := s.validateActions(ctx, orgID, body.Object, byName, body.Actions); err != nil {
+	if err := s.validateActions(ctx, orgID, body.Object, byName, body.Actions, true); err != nil {
 		return automationPlan{}, err
 	}
 	if len(body.Else) > 0 {
-		if err := s.validateActions(ctx, orgID, body.Object, byName, body.Else); err != nil {
+		if err := s.validateActions(ctx, orgID, body.Object, byName, body.Else, false); err != nil {
 			return automationPlan{}, err
 		}
 	}
@@ -474,10 +474,11 @@ func conditionOp(fieldType, op string) bool {
 	}
 }
 
-func (s *server) validateActions(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, actions []automationAction) error {
+func (s *server) validateActions(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, actions []automationAction, allowApproval bool) error {
 	if len(actions) == 0 {
 		return apiErr(http.StatusBadRequest, "actions are required")
 	}
+	approvals := 0
 	for _, action := range actions {
 		if action.Type != "email" && (action.To != nil || action.Subject != nil) {
 			return apiErr(http.StatusBadRequest, "invalid action")
@@ -500,6 +501,15 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 			continue
 		case "email":
 			if err := validateEmailAction(sourceName, source, action); err != nil {
+				return err
+			}
+			continue
+		case "approval":
+			if !allowApproval || approvals > 0 {
+				return apiErr(http.StatusBadRequest, "invalid action")
+			}
+			approvals++
+			if err := s.validateApprovalAction(ctx, orgID, action); err != nil {
 				return err
 			}
 			continue
@@ -883,20 +893,81 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if err != nil {
 		return err
 	}
-	chosen := actions
-	path := "actions"
 	if !matched {
 		if len(elseActions) == 0 {
 			return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "skipped", "", nil)
 		}
-		chosen = elseActions
-		path = "else"
+		return s.finishActions(ctx, job, event, data, elseActions, "else")
 	}
-	actor, err := s.memberActor(ctx, job.OrgID, event.ActorID)
+	before, _, step, err := splitApproval(actions)
 	if err != nil {
 		return err
 	}
-	created := []string{}
+	if step != nil {
+		return s.pauseForApproval(ctx, job, event, data, before, *step)
+	}
+	return s.finishActions(ctx, job, event, data, actions, "actions")
+}
+
+type actionResult struct {
+	created []string
+	notes   []notificationWrite
+	emails  []emailWrite
+}
+
+func splitApproval(actions []automationAction) (before, after []automationAction, step *automationAction, err error) {
+	index := -1
+	for i := range actions {
+		if actions[i].Type != "approval" {
+			continue
+		}
+		if index >= 0 {
+			return nil, nil, nil, fmt.Errorf("invalid action")
+		}
+		index = i
+	}
+	if index < 0 {
+		return actions, nil, nil, nil
+	}
+	found := actions[index]
+	before = append([]automationAction{}, actions[:index]...)
+	after = append([]automationAction{}, actions[index+1:]...)
+	return before, after, &found, nil
+}
+
+func (s *server) finishActions(ctx context.Context, job dueJob, event webhookEvent, data map[string]any, actions []automationAction, path string) error {
+	result, err := s.performActions(ctx, job, event, data, actions)
+	if err != nil {
+		return err
+	}
+	if len(result.emails) > 0 {
+		return s.commitEmails(ctx, job.OrgID, job.AutomationID, job.EventID, path, result.created, result.notes, result.emails)
+	}
+	if len(result.notes) > 0 {
+		return s.commitNotifications(ctx, job.OrgID, job.AutomationID, job.EventID, path, result.created, result.notes)
+	}
+	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", path, result.created)
+}
+
+// pauseForApproval runs the actions before the approval and finishes the job.
+// The execution stays waiting, so a later pass does not run the rest.
+func (s *server) pauseForApproval(ctx context.Context, job dueJob, event webhookEvent, data map[string]any, before []automationAction, step automationAction) error {
+	userID, err := s.notificationUser(ctx, job.OrgID, step.User)
+	if err != nil {
+		return err
+	}
+	result, err := s.performActions(ctx, job, event, data, before)
+	if err != nil {
+		return err
+	}
+	return s.commitWaiting(ctx, job.OrgID, job.AutomationID, job.EventID, userID, result.created, result.notes, result.emails)
+}
+
+func (s *server) performActions(ctx context.Context, job dueJob, event webhookEvent, data map[string]any, actions []automationAction) (actionResult, error) {
+	actor, err := s.memberActor(ctx, job.OrgID, event.ActorID)
+	if err != nil {
+		return actionResult{}, err
+	}
 	recordID := ""
 	if event.RecordID != nil {
 		recordID = *event.RecordID
@@ -906,37 +977,36 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if event.ObjectID != nil {
 		sourceObjectID = *event.ObjectID
 	}
-	notes := []notificationWrite{}
-	emails := []emailWrite{}
-	for _, action := range chosen {
+	return s.runActionList(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, actions, job.AutomationID)
+}
+
+func (s *server) runActionList(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, actions []automationAction, cause string) (actionResult, error) {
+	result := actionResult{created: []string{}}
+	for _, action := range actions {
 		switch action.Type {
 		case "notification":
-			note, err := s.prepareNotification(ctx, actor.OrgID, recordID, data, action)
+			note, err := s.prepareNotification(ctx, a.OrgID, recordID, record, action)
 			if err != nil {
-				return err
+				return actionResult{}, err
 			}
-			notes = append(notes, note)
+			result.notes = append(result.notes, note)
 		case "email":
-			message, err := prepareEmail(recordID, data, action)
+			message, err := prepareEmail(recordID, record, action)
 			if err != nil {
-				return err
+				return actionResult{}, err
 			}
-			emails = append(emails, message)
+			result.emails = append(result.emails, message)
+		case "approval":
+			return actionResult{}, fmt.Errorf("invalid action")
 		default:
-			ids, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
+			ids, err := s.runAction(ctx, a, eventName, sourceName, sourceObjectID, recordID, record, action, cause)
 			if err != nil {
-				return err
+				return actionResult{}, err
 			}
-			created = append(created, ids...)
+			result.created = append(result.created, ids...)
 		}
 	}
-	if len(emails) > 0 {
-		return s.commitEmails(ctx, job.OrgID, job.AutomationID, job.EventID, path, created, notes, emails)
-	}
-	if len(notes) > 0 {
-		return s.commitNotifications(ctx, job.OrgID, job.AutomationID, job.EventID, path, created, notes)
-	}
-	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", path, created)
+	return result, nil
 }
 
 func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) ([]string, error) {

@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { api } from "./api.js"
+import { Approvals } from "./Approvals.jsx"
 import { Flows } from "./Flows.jsx"
 import { Objects } from "./Objects.jsx"
 import { RecordPage, TablePage } from "./Records.jsx"
@@ -40,7 +41,7 @@ export default function App() {
       .catch((err) => setError(err.message))
   }
 
-  const section = screen.page === "flows" ? "flows" : "objects"
+  const section = screen.page === "flows" ? "flows" : screen.page === "approvals" ? "approvals" : "objects"
 
   return (
     <div className={section === "flows" ? "app wide" : "app"}>
@@ -51,6 +52,7 @@ export default function App() {
             <nav>
               <button className="text" aria-current={section === "objects" ? "page" : undefined} onClick={() => setScreen({ page: "objects" })}>Objects</button>
               <button className="text" aria-current={section === "flows" ? "page" : undefined} onClick={() => setScreen({ page: "flows" })}>Flows</button>
+              <button className="text" aria-current={section === "approvals" ? "page" : undefined} onClick={() => setScreen({ page: "approvals" })}>Approvals</button>
             </nav>
           )}
         </div>
@@ -94,6 +96,8 @@ export default function App() {
         <p className="empty">Sign in, or paste the token printed by the seed command.</p>
       ) : screen.page === "flows" ? (
         <Flows token={token} />
+      ) : screen.page === "approvals" ? (
+        <Approvals token={token} />
       ) : screen.page === "table" ? (
         <TablePage token={token} object={screen.object} open={setScreen} />
       ) : screen.page === "record" ? (

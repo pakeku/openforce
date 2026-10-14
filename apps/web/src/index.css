@@ -132,10 +132,24 @@ button.text[aria-current="page"] { font-weight: 700; }
 }
 .flow-node.trigger { border-color: #1d4e89; }
 .flow-node.else { border-color: #9a3412; }
+.flow-node.approval { border-color: #3f6212; }
 .flow-kind { color: #667085; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .react-flow__node.selected .flow-node { box-shadow: 0 0 0 2px #1c2430; }
 .executions { list-style: none; padding: 0; margin: 0; }
 .executions li { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #e1e4ea; }
+.approval-list { list-style: none; padding: 0; margin: 0; }
+.approval-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  background: white;
+  border: 1px solid #e1e4ea;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.approval-row span { color: #667085; display: block; }
 
 @media (max-width: 800px) {
   header { align-items: stretch; flex-direction: column; }

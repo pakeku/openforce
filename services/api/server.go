@@ -55,6 +55,8 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("PATCH /api/automations/{name}", s.requireUser(s.patchAutomation))
 	mux.HandleFunc("DELETE /api/automations/{name}", s.requireUser(s.deleteAutomation))
 	mux.HandleFunc("GET /api/automations/{name}/executions", s.requireUser(s.listExecutions))
+	mux.HandleFunc("GET /api/approvals", s.requireUser(s.listApprovals))
+	mux.HandleFunc("POST /api/approvals/{id}", s.requireUser(s.decideApproval))
 	mux.HandleFunc("GET /api/notifications", s.requireUser(s.listNotifications))
 	mux.HandleFunc("GET /api/emails", s.requireUser(s.listEmails))
 	mux.HandleFunc("POST /api/meta/objects", s.requireUser(s.createObject))

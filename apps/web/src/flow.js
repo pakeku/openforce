@@ -151,6 +151,12 @@ export function graphToWorkflow(nodes, edges, options = {}) {
   if (every && (actions.some(blocked) || elseActions.some(blocked))) {
     throw new Error("a schedule can create a record or POST JSON")
   }
+  if (actions.filter((action) => action.type === "approval").length > 1) {
+    throw new Error("a flow has one approval")
+  }
+  if (elseActions.some((action) => action.type === "approval")) {
+    throw new Error("an approval stays on the match path")
+  }
   return { conditions, actions, else: elseActions }
 }
 
@@ -352,6 +358,7 @@ function actionToNodeData(action) {
     type: action.type,
     object: action.object || "",
     url: action.url || "",
+    user: action.user || "",
     recordMode,
     recordField,
     rows,
@@ -366,6 +373,11 @@ function actionFromNode(data, sourceObject, fieldsByObject) {
     const action = { type: "http", url: data.url.trim() }
     if (data.rows?.length) action.data = objectFromRows(data.rows, lookup)
     return action
+  }
+  if (data.type === "approval") {
+    const user = typeof data.user === "string" ? data.user.trim() : ""
+    if (!user) throw new Error("an approval needs a user")
+    return { type: "approval", user }
   }
   if (data.type !== "create" && data.type !== "update" && data.type !== "delete") {
     throw new Error("invalid action")

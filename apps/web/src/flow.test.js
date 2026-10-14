@@ -174,6 +174,60 @@ test("removing the condition keeps the other path in front of the trigger", () =
   assert.equal(graph.edges.find((edge) => edge.sourceHandle === "else").source, "trigger")
 })
 
+test("one approval round-trips on the match path", () => {
+  const workflow = {
+    label: "Review",
+    event: "record.created",
+    object: "company",
+    conditions: [{ field: "employees", op: "gte", value: 3 }],
+    actions: [
+      { type: "create", object: "task", data: { name: "Earlier" } },
+      { type: "approval", user: "mia@example.com" },
+      { type: "http", url: "https://example.com/later" },
+    ],
+    else: [{ type: "create", object: "task", data: { name: "Miss" } }],
+  }
+  const graph = workflowToGraph(workflow)
+  const back = graphToWorkflow(graph.nodes, graph.edges, { object: "company", fields, fieldsByObject })
+  assert.equal("position" in back, false)
+  assert.equal(back.actions[1].position, undefined)
+  assert.deepEqual(back.conditions, workflow.conditions)
+  assert.deepEqual(back.actions, workflow.actions)
+  assert.deepEqual(back.else, workflow.else)
+  assert.equal(graph.edges.find((edge) => edge.sourceHandle === "else").source, "condition-0")
+  const clock = workflowToGraph({
+    label: "Clock",
+    every: "1d",
+    actions: [{ type: "approval", user: "mia@example.com" }],
+  })
+  const scheduled = graphToWorkflow(clock.nodes, clock.edges, { every: "1d", fields: [], fieldsByObject: {} })
+  assert.deepEqual(scheduled.actions, [{ type: "approval", user: "mia@example.com" }])
+  assert.deepEqual(scheduled.else, [])
+})
+
+test("a second approval or an else approval is rejected", () => {
+  const second = workflowToGraph({
+    label: "Twice",
+    actions: [
+      { type: "approval", user: "mia@example.com" },
+      { type: "approval", user: "ada@example.com" },
+    ],
+  })
+  assert.throws(
+    () => graphToWorkflow(second.nodes, second.edges),
+    /a flow has one approval/,
+  )
+  const other = workflowToGraph({
+    label: "Other",
+    actions: [{ type: "delete" }],
+    else: [{ type: "approval", user: "mia@example.com" }],
+  })
+  assert.throws(
+    () => graphToWorkflow(other.nodes, other.edges),
+    /an approval stays on the match path/,
+  )
+})
+
 test("a schedule rejects else", () => {
   const graph = workflowToGraph({
     label: "Ping",
