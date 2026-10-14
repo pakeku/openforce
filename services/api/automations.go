@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -25,6 +27,7 @@ type automationAction struct {
 	Object string         `json:"object,omitempty"`
 	Record any            `json:"record,omitempty"`
 	Data   map[string]any `json:"data,omitempty"`
+	URL    string         `json:"url,omitempty"`
 }
 
 type automationInput struct {
@@ -378,6 +381,11 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 	}
 	for _, action := range actions {
 		switch action.Type {
+		case "http":
+			if err := validateHTTPAction(source, action); err != nil {
+				return err
+			}
+			continue
 		case "create", "update", "delete":
 		default:
 			return apiErr(http.StatusBadRequest, "invalid action")
@@ -661,7 +669,7 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 		sourceObjectID = *event.ObjectID
 	}
 	for _, action := range actions {
-		id, err := s.runAction(ctx, actor, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
+		id, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
 		if err != nil {
 			return err
 		}
@@ -672,7 +680,7 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", created)
 }
 
-func (s *server) runAction(ctx context.Context, a actor, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
+func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
 	switch action.Type {
 	case "create":
 		return s.runCreateAction(ctx, a, recordID, record, action, cause)
@@ -680,8 +688,123 @@ func (s *server) runAction(ctx context.Context, a actor, sourceName, sourceObjec
 		return "", s.runUpdateAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
 	case "delete":
 		return "", s.runDeleteAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
+	case "http":
+		return "", s.runHTTPAction(ctx, eventName, sourceName, recordID, record, action)
 	default:
 		return "", fmt.Errorf("invalid action")
+	}
+}
+
+func validateHTTPAction(source map[string]fieldDef, action automationAction) error {
+	if err := validHTTPURL(action.URL); err != nil {
+		return err
+	}
+	return walkHTTPValue(source, action.Data)
+}
+
+func walkHTTPValue(source map[string]fieldDef, value any) error {
+	if field, ok := fieldRef(value); ok {
+		if _, known := source[field]; !known {
+			return apiErrf(http.StatusBadRequest, "unknown field %s", field)
+		}
+		return nil
+	}
+	if isRecordRef(value) {
+		return nil
+	}
+	switch typed := value.(type) {
+	case nil, string, float64, bool:
+		return nil
+	case map[string]any:
+		for _, child := range typed {
+			if err := walkHTTPValue(source, child); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		for _, child := range typed {
+			if err := walkHTTPValue(source, child); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return apiErr(http.StatusBadRequest, "invalid action")
+	}
+}
+
+func (s *server) runHTTPAction(ctx context.Context, eventName, objectName, recordID string, record map[string]any, action automationAction) error {
+	var payload any
+	if action.Data != nil {
+		resolved, err := resolveHTTPValue(action.Data, recordID, record)
+		if err != nil {
+			return err
+		}
+		payload = resolved
+	} else {
+		payload = map[string]any{
+			"event":     eventName,
+			"object":    objectName,
+			"record_id": recordID,
+			"data":      record,
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, action.URL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Openforce-Action")
+	resp, err := webhookClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func resolveHTTPValue(value any, recordID string, record map[string]any) (any, error) {
+	if field, ok := fieldRef(value); ok {
+		return record[field], nil
+	}
+	if isRecordRef(value) {
+		if recordID == "" {
+			return nil, fmt.Errorf("invalid record")
+		}
+		return recordID, nil
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for key, child := range typed {
+			resolved, err := resolveHTTPValue(child, recordID, record)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = resolved
+		}
+		return out, nil
+	case []any:
+		out := make([]any, len(typed))
+		for i, child := range typed {
+			resolved, err := resolveHTTPValue(child, recordID, record)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = resolved
+		}
+		return out, nil
+	default:
+		return value, nil
 	}
 }
 

@@ -181,10 +181,17 @@ func (s *server) deleteWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func validateWebhook(body webhookInput) error {
-	parsed, err := url.Parse(body.URL)
+func validHTTPURL(raw string) error {
+	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return apiErr(http.StatusBadRequest, "invalid url")
+	}
+	return nil
+}
+
+func validateWebhook(body webhookInput) error {
+	if err := validHTTPURL(body.URL); err != nil {
+		return err
 	}
 	if len(body.Events) == 0 {
 		return apiErr(http.StatusBadRequest, "events are required")

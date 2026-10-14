@@ -19,7 +19,7 @@ func TestAutomationCanUpdateAndDelete(t *testing.T) {
 
 	rec := apiDo(t, http.MethodPost, "/api/automations", token, map[string]any{
 		"name": "call", "label": "Call", "event": "record.created", "object": "company",
-		"actions": []any{map[string]any{"type": "http", "object": "company"}},
+		"actions": []any{map[string]any{"type": "email", "object": "company"}},
 	})
 	requireStatus(t, rec, http.StatusBadRequest)
 	if errorOf(t, rec) != "invalid action" {
