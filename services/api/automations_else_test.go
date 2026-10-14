@@ -154,7 +154,7 @@ func TestAutomationTakesTheOtherPath(t *testing.T) {
 		"else":    []any{map[string]any{"type": "email"}},
 	})
 	requireStatus(t, rec, http.StatusBadRequest)
-	if errorOf(t, rec) != "invalid action" {
+	if errorOf(t, rec) != "to is required" {
 		t.Fatalf("else type %s", rec.Body.String())
 	}
 	rec = apiDo(t, http.MethodDelete, "/api/automations/rewrite", token, nil)

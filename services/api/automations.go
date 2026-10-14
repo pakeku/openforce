@@ -25,15 +25,17 @@ type condition struct {
 }
 
 type automationAction struct {
-	Type   string         `json:"type"`
-	Name   string         `json:"name,omitempty"`
-	Object string         `json:"object,omitempty"`
-	Record any            `json:"record,omitempty"`
-	Data   map[string]any `json:"data,omitempty"`
-	URL    string         `json:"url,omitempty"`
-	User   string         `json:"user,omitempty"`
-	Title  any            `json:"title,omitempty"`
-	Body   any            `json:"body,omitempty"`
+	Type    string         `json:"type"`
+	Name    string         `json:"name,omitempty"`
+	Object  string         `json:"object,omitempty"`
+	Record  any            `json:"record,omitempty"`
+	Data    map[string]any `json:"data,omitempty"`
+	URL     string         `json:"url,omitempty"`
+	User    string         `json:"user,omitempty"`
+	Title   any            `json:"title,omitempty"`
+	Body    any            `json:"body,omitempty"`
+	To      any            `json:"to,omitempty"`
+	Subject any            `json:"subject,omitempty"`
 }
 
 type automationInput struct {
@@ -477,6 +479,9 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 		return apiErr(http.StatusBadRequest, "actions are required")
 	}
 	for _, action := range actions {
+		if action.Type != "email" && (action.To != nil || action.Subject != nil) {
+			return apiErr(http.StatusBadRequest, "invalid action")
+		}
 		switch action.Type {
 		case "http":
 			if err := validateHTTPAction(sourceName, source, action); err != nil {
@@ -490,6 +495,11 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 			continue
 		case "notification":
 			if err := s.validateNotificationAction(ctx, orgID, sourceName, source, action); err != nil {
+				return err
+			}
+			continue
+		case "email":
+			if err := validateEmailAction(sourceName, source, action); err != nil {
 				return err
 			}
 			continue
@@ -897,20 +907,31 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 		sourceObjectID = *event.ObjectID
 	}
 	notes := []notificationWrite{}
+	emails := []emailWrite{}
 	for _, action := range chosen {
-		if action.Type == "notification" {
+		switch action.Type {
+		case "notification":
 			note, err := s.prepareNotification(ctx, actor.OrgID, recordID, data, action)
 			if err != nil {
 				return err
 			}
 			notes = append(notes, note)
-			continue
+		case "email":
+			message, err := prepareEmail(recordID, data, action)
+			if err != nil {
+				return err
+			}
+			emails = append(emails, message)
+		default:
+			ids, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
+			if err != nil {
+				return err
+			}
+			created = append(created, ids...)
 		}
-		ids, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
-		if err != nil {
-			return err
-		}
-		created = append(created, ids...)
+	}
+	if len(emails) > 0 {
+		return s.commitEmails(ctx, job.OrgID, job.AutomationID, job.EventID, path, created, notes, emails)
 	}
 	if len(notes) > 0 {
 		return s.commitNotifications(ctx, job.OrgID, job.AutomationID, job.EventID, path, created, notes)
