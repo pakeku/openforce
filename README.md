@@ -52,7 +52,7 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Metadata UI, events, jobs, and automation come in later phases.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Events, jobs, and automation come in later phases.
 
 ## Run the kernel
 
@@ -94,3 +94,17 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `POST /api/objects/{name}/{id}/related/{relationship}` | Links a many-to-many record. Body is `{"id":"..."}`. |
 
 Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant.
+
+A list accepts repeatable `filter` and `sort` parameters, such as `filter=industry:eq:SaaS&sort=employees:desc`. Operators are `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, and `contains`. Creating an object also creates an All view, a Record layout, and list and record pages. Those are edited at `/api/meta/objects/{name}/views`, `/layouts`, and `/pages`. A view named in `?view=` supplies columns, filters, and sort. A patch of a view, layout, or page sends the current version and gets the next one back.
+
+## Work with records
+
+The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page.
+
+```text
+cd apps/web
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` and paste the seed token. The API has to be running. Set `VITE_API_URL` when it is not `http://localhost:8080`.

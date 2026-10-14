@@ -102,12 +102,20 @@ func startTestDB() (func(), error) {
 
 func TestMigrationsApplied(t *testing.T) {
 	ctx := context.Background()
+	dir, err := findMigrationsFrom(mustWD())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := migrationFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var n int
 	if err := testPool.QueryRow(ctx, `select count(*) from schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
-		t.Fatalf("applied %d migrations, want 6", n)
+	if n != len(files) {
+		t.Fatalf("applied %d migrations, want %d", n, len(files))
 	}
 
 	conn, err := pgx.Connect(ctx, testURL)
@@ -115,10 +123,6 @@ func TestMigrationsApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	dir, err := findMigrationsFrom(mustWD())
-	if err != nil {
-		t.Fatal(err)
-	}
 	applied, err := applyMigrations(ctx, conn, dir)
 	if err != nil {
 		t.Fatal(err)

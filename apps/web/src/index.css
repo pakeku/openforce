@@ -1,0 +1,103 @@
+:root {
+  color: #1c2430;
+  background: #f3f4f6;
+  font-family: "Segoe UI", sans-serif;
+  line-height: 1.4;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; }
+
+button, input, select {
+  font: inherit;
+}
+
+button {
+  background: #1c2430;
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+}
+
+button.secondary, button.text {
+  background: white;
+  color: #1c2430;
+  border: 1px solid #c5cad3;
+}
+
+button.text { border: 0; padding: 0; color: #1d4e89; }
+
+.app { max-width: 960px; margin: 0 auto; padding: 1rem; }
+
+header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+header form, .filters, .actions, .field-row, .title-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.brand { background: transparent; color: #1c2430; font-weight: 700; padding: 0; }
+
+header input, .filters input, .panel input, .panel select, .field-row input, .field-row select {
+  border: 1px solid #c5cad3;
+  border-radius: 6px;
+  padding: 0.4rem 0.55rem;
+  background: white;
+}
+
+header input { min-width: 16rem; }
+
+h1 { font-size: 1.5rem; margin: 0; }
+h2 { font-size: 1rem; margin: 0 0 0.75rem; }
+
+.object-list { list-style: none; padding: 0; margin: 0 0 1.5rem; }
+.object-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  background: white;
+  color: inherit;
+  border: 1px solid #e1e4ea;
+  margin-bottom: 0.5rem;
+  text-align: left;
+}
+.object-list span { color: #667085; }
+
+.panel, .table-wrap {
+  background: white;
+  border: 1px solid #e1e4ea;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.panel label { display: block; margin-bottom: 0.75rem; }
+.panel label input, .panel label select { display: block; width: 100%; margin-top: 0.25rem; }
+.panel label .check, label.check { display: flex; align-items: center; gap: 0.35rem; width: auto; }
+
+.table-wrap { padding: 0; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e1e4ea; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #f8fafc; }
+
+.title-row, .filters { margin-bottom: 1rem; }
+.filters { margin-top: 1rem; }
+.error { color: #9f1239; }
+.empty { color: #667085; }
+.version { color: #667085; }
+
+@media (max-width: 640px) {
+  header { align-items: stretch; flex-direction: column; }
+  header input { min-width: 0; width: 100%; }
+}

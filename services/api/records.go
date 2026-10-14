@@ -82,17 +82,22 @@ func (s *server) listRecords(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	limit, err := listLimit(r)
+	defs, err := s.fieldDefs(r.Context(), objectID)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	views, err := s.selectRecords(r.Context(), a.OrgID, objectID, limit)
+	query, err := s.resolveList(r, a.OrgID, objectID, defs)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"records": views})
+	views, err := s.selectRecords(r.Context(), query)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": projectRecords(views, query.Columns)})
 }
 
 func (s *server) patchRecord(w http.ResponseWriter, r *http.Request) {
@@ -263,14 +268,9 @@ func (s *server) selectRecord(ctx context.Context, orgID, objectID, id string) (
 	return view, err
 }
 
-func (s *server) selectRecords(ctx context.Context, orgID, objectID string, limit int) ([]recordView, error) {
-	rows, err := s.pool.Query(ctx, `
-		select id::text, version, data
-		from records
-		where organization_id = $1::uuid and object_id = $2::uuid and deleted_at is null
-		order by created_at, id
-		limit $3
-	`, orgID, objectID, limit)
+func (s *server) selectRecords(ctx context.Context, query listQuery) ([]recordView, error) {
+	sql, args := query.sql()
+	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}

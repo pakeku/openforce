@@ -159,6 +159,9 @@ func (s *server) insertObject(ctx context.Context, orgID string, body objectBody
 			return objectView{}, err
 		}
 	}
+	if err := insertDefaultCatalog(ctx, tx, orgID, objectID); err != nil {
+		return objectView{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return objectView{}, err
 	}

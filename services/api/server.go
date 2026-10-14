@@ -20,8 +20,21 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("POST /api/meta/objects", s.requireAuth(s.createObject))
 	mux.HandleFunc("GET /api/meta/objects", s.requireAuth(s.listObjects))
 	mux.HandleFunc("GET /api/meta/objects/{name}", s.requireAuth(s.getObject))
+	mux.HandleFunc("GET /api/meta/objects/{name}/relationships", s.requireAuth(s.listRelationships))
 	mux.HandleFunc("POST /api/meta/objects/{name}/relationships", s.requireAuth(s.createRelationship))
 	mux.HandleFunc("PUT /api/meta/objects/{name}/permissions", s.requireAuth(s.putPermissions))
+	mux.HandleFunc("GET /api/meta/objects/{name}/views", s.requireAuth(s.listViews))
+	mux.HandleFunc("POST /api/meta/objects/{name}/views", s.requireAuth(s.createView))
+	mux.HandleFunc("GET /api/meta/objects/{name}/views/{view}", s.requireAuth(s.getView))
+	mux.HandleFunc("PATCH /api/meta/objects/{name}/views/{view}", s.requireAuth(s.patchView))
+	mux.HandleFunc("GET /api/meta/objects/{name}/layouts", s.requireAuth(s.listLayouts))
+	mux.HandleFunc("POST /api/meta/objects/{name}/layouts", s.requireAuth(s.createLayout))
+	mux.HandleFunc("GET /api/meta/objects/{name}/layouts/{layout}", s.requireAuth(s.getLayout))
+	mux.HandleFunc("PATCH /api/meta/objects/{name}/layouts/{layout}", s.requireAuth(s.patchLayout))
+	mux.HandleFunc("GET /api/meta/objects/{name}/pages", s.requireAuth(s.listPages))
+	mux.HandleFunc("POST /api/meta/objects/{name}/pages", s.requireAuth(s.createPage))
+	mux.HandleFunc("GET /api/meta/objects/{name}/pages/{page}", s.requireAuth(s.getPage))
+	mux.HandleFunc("PATCH /api/meta/objects/{name}/pages/{page}", s.requireAuth(s.patchPage))
 	mux.HandleFunc("GET /api/objects/{name}", s.requireAuth(s.listRecords))
 	mux.HandleFunc("POST /api/objects/{name}", s.requireAuth(s.createRecord))
 	mux.HandleFunc("GET /api/objects/{name}/{id}", s.requireAuth(s.getRecord))
@@ -29,7 +42,20 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("DELETE /api/objects/{name}/{id}", s.requireAuth(s.deleteRecord))
 	mux.HandleFunc("GET /api/objects/{name}/{id}/related/{rel}", s.requireAuth(s.listRelated))
 	mux.HandleFunc("POST /api/objects/{name}/{id}/related/{rel}", s.requireAuth(s.linkRelated))
-	return mux
+	return withCORS(mux)
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
