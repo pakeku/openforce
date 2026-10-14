@@ -26,6 +26,7 @@ type condition struct {
 
 type automationAction struct {
 	Type   string         `json:"type"`
+	Name   string         `json:"name,omitempty"`
 	Object string         `json:"object,omitempty"`
 	Record any            `json:"record,omitempty"`
 	Data   map[string]any `json:"data,omitempty"`
@@ -479,6 +480,11 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 				return err
 			}
 			continue
+		case "function":
+			if err := s.validateFunctionAction(ctx, orgID, action); err != nil {
+				return err
+			}
+			continue
 		case "create", "update", "delete":
 			if sourceName == "" && action.Type != "create" {
 				return apiErr(http.StatusBadRequest, "invalid action")
@@ -883,29 +889,33 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 		sourceObjectID = *event.ObjectID
 	}
 	for _, action := range chosen {
-		id, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
+		ids, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
 		if err != nil {
 			return err
 		}
-		if id != "" {
-			created = append(created, id)
-		}
+		created = append(created, ids...)
 	}
 	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", path, created)
 }
 
-func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
+func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) ([]string, error) {
 	switch action.Type {
 	case "create":
-		return s.runCreateAction(ctx, a, recordID, record, action, cause)
+		id, err := s.runCreateAction(ctx, a, recordID, record, action, cause)
+		if err != nil || id == "" {
+			return nil, err
+		}
+		return []string{id}, nil
 	case "update":
-		return "", s.runUpdateAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
+		return nil, s.runUpdateAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
 	case "delete":
-		return "", s.runDeleteAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
+		return nil, s.runDeleteAction(ctx, a, sourceName, sourceObjectID, recordID, record, action, cause)
 	case "http":
-		return "", s.runHTTPAction(ctx, eventName, sourceName, recordID, record, action)
+		return nil, s.runHTTPAction(ctx, eventName, sourceName, recordID, record, action)
+	case "function":
+		return s.runFunction(ctx, a, eventName, sourceName, recordID, record, action, cause)
 	default:
-		return "", fmt.Errorf("invalid action")
+		return nil, fmt.Errorf("invalid action")
 	}
 }
 
