@@ -123,7 +123,7 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `GET /api/automations/{name}/executions` | Whether each matching event was skipped or done. |
 | `GET /api/emails` | Owner lists stored outbound email. The message is stored, not sent. |
 
-Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant. An API key uses the grants stored on that key.
+Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant. An API key uses the grants stored on that key. A member lists objects and reads their views, layouts, pages, and relationships only when that member can read the object.
 
 A list accepts repeatable `filter` and `sort` parameters, such as `filter=industry:eq:SaaS&sort=employees:desc`. Operators are `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, and `contains`. Creating an object also creates an All view, a Record layout, and list and record pages. Those are edited at `/api/meta/objects/{name}/views`, `/layouts`, and `/pages`. A view named in `?view=` supplies columns, filters, and sort. A patch of a view, layout, or page sends the current version and gets the next one back.
 

@@ -66,7 +66,7 @@ CRUD API
 
 **Goal.** Define an object, then create, read, update, and delete its records.
 
-Permissions in this phase cover authentication, organization membership, and object-level allow or deny, enforced through the policy engine. Finer sharing arrives with the UI.
+Permissions in this phase cover authentication, organization membership, and object-level allow or deny, enforced through the policy engine. A member reads an object's catalog only when that member can read the object. Finer sharing arrives with the UI.
 
 ## Phase 2. Metadata and UI
 

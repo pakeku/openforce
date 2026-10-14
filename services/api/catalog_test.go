@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -156,5 +157,203 @@ func TestFiltersSortAndCatalog(t *testing.T) {
 	requireStatus(t, opt, http.StatusNoContent)
 	if opt.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("cors %s", opt.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestCatalogReadRequiresGrant(t *testing.T) {
+	owner := newOwner(t, "Catalog Read", "catalog-read-owner@example.com")
+	postObject(t, owner, companyObject())
+	postObject(t, owner, map[string]any{
+		"name": "contact", "label": "Contact",
+		"fields": []map[string]any{{"name": "name", "type": "text", "required": true}},
+	})
+	rec := apiDo(t, http.MethodPost, "/api/meta/objects/company/relationships", owner, map[string]any{
+		"name": "owner", "kind": "belongs_to", "to": "contact", "inverse": "companies",
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	if listObjectNames(t, owner) != "company,contact" {
+		t.Fatalf("owner list %s", listObjectNames(t, owner))
+	}
+	for _, path := range companyCatalogReads() {
+		rec = apiDo(t, http.MethodGet, path, owner, nil)
+		requireStatus(t, rec, http.StatusOK)
+	}
+
+	member, err := (&server{pool: testPool}).addMember(context.Background(), orgOf(t, owner), "Mia", "catalog-read-member@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	if strings.TrimSpace(rec.Body.String()) != `{"objects":[]}` {
+		t.Fatalf("member list %s", rec.Body.String())
+	}
+	for _, path := range companyCatalogReads() {
+		requireExactForbidden(t, apiDo(t, http.MethodGet, path, member, nil))
+	}
+	for _, path := range []string{
+		"/api/meta/objects/missing",
+		"/api/meta/objects/missing/views",
+		"/api/meta/objects/company/views/missing",
+	} {
+		rec = apiDo(t, http.MethodGet, path, member, nil)
+		if path == "/api/meta/objects/company/views/missing" {
+			requireExactForbidden(t, rec)
+			continue
+		}
+		requireStatus(t, rec, http.StatusNotFound)
+		if errorOf(t, rec) != "not found" {
+			t.Fatalf("%s %s", path, rec.Body.String())
+		}
+	}
+
+	other := newOwner(t, "Catalog Read Other", "catalog-read-other@example.com")
+	postObject(t, other, map[string]any{
+		"name": "secret", "label": "Secret",
+		"fields": []map[string]any{{"name": "name", "type": "text", "required": true}},
+	})
+	for _, path := range []string{"/api/meta/objects/secret", "/api/meta/objects/secret/views", "/api/meta/objects/secret/layouts/record", "/api/meta/objects/secret/pages/list", "/api/meta/objects/secret/relationships"} {
+		rec = apiDo(t, http.MethodGet, path, member, nil)
+		requireStatus(t, rec, http.StatusNotFound)
+		if errorOf(t, rec) != "not found" || strings.Contains(rec.Body.String(), "Secret") {
+			t.Fatalf("%s %s", path, rec.Body.String())
+		}
+	}
+	if listObjectNames(t, other) != "secret" {
+		t.Fatalf("other list %s", listObjectNames(t, other))
+	}
+
+	rec = apiDo(t, http.MethodPut, "/api/meta/objects/company/permissions", owner, map[string]any{
+		"role": "member", "can_read": false, "can_write": true,
+	})
+	requireStatus(t, rec, http.StatusOK)
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	if strings.TrimSpace(rec.Body.String()) != `{"objects":[]}` {
+		t.Fatalf("write-only list %s", rec.Body.String())
+	}
+	requireExactForbidden(t, apiDo(t, http.MethodGet, "/api/meta/objects/company", member, nil))
+
+	rec = apiDo(t, http.MethodPut, "/api/meta/objects/company/permissions", owner, map[string]any{
+		"role": "member", "can_read": true, "can_write": true,
+	})
+	requireStatus(t, rec, http.StatusOK)
+	if listObjectNames(t, member) != "company" || listObjectNames(t, owner) != "company,contact" {
+		t.Fatalf("member %s owner %s", listObjectNames(t, member), listObjectNames(t, owner))
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var object objectView
+	mustJSON(t, rec, &object)
+	if object.Name != "company" || object.Label != "Company" || findField(t, object.Fields, "name").Type != "text" {
+		t.Fatalf("object %#v", object)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/views/all", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var view storedView
+	mustJSON(t, rec, &view)
+	if view.Name != "all" || !view.All {
+		t.Fatalf("view %#v", view)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/layouts/record", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var layout storedLayout
+	mustJSON(t, rec, &layout)
+	if layout.Name != "record" {
+		t.Fatalf("layout %#v", layout)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/pages/list", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var page storedPage
+	mustJSON(t, rec, &page)
+	if page.Name != "list" {
+		t.Fatalf("page %#v", page)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/relationships", member, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var rels struct {
+		Relationships []map[string]string `json:"relationships"`
+	}
+	mustJSON(t, rec, &rels)
+	if len(rels.Relationships) != 1 || rels.Relationships[0]["name"] != "owner" {
+		t.Fatalf("relationships %#v", rels.Relationships)
+	}
+	for _, path := range []string{
+		"/api/meta/objects/contact",
+		"/api/meta/objects/contact/views",
+		"/api/meta/objects/contact/views/all",
+		"/api/meta/objects/contact/layouts",
+		"/api/meta/objects/contact/layouts/record",
+		"/api/meta/objects/contact/pages",
+		"/api/meta/objects/contact/pages/record",
+		"/api/meta/objects/contact/relationships",
+	} {
+		requireExactForbidden(t, apiDo(t, http.MethodGet, path, member, nil))
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/views/missing", member, nil)
+	requireStatus(t, rec, http.StatusNotFound)
+	for _, call := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{http.MethodPost, "/api/meta/objects", map[string]any{"name": "deal", "label": "Deal"}},
+		{http.MethodPost, "/api/meta/objects/company/views", map[string]any{"name": "mine", "label": "Mine"}},
+		{http.MethodPatch, "/api/meta/objects/company/views/all", map[string]any{"version": 1, "label": "Nope"}},
+		{http.MethodPost, "/api/meta/objects/company/layouts", map[string]any{"name": "mine", "label": "Mine"}},
+		{http.MethodPatch, "/api/meta/objects/company/layouts/record", map[string]any{"version": 1, "label": "Nope"}},
+		{http.MethodPost, "/api/meta/objects/company/pages", map[string]any{"name": "mine", "label": "Mine", "document": map[string]any{"kind": "list", "view": "all"}}},
+		{http.MethodPatch, "/api/meta/objects/company/pages/list", map[string]any{"version": 1, "label": "Nope"}},
+		{http.MethodPost, "/api/meta/objects/company/relationships", map[string]any{"name": "notes", "kind": "has_many", "to": "contact", "inverse": "company"}},
+	} {
+		requireExactForbidden(t, apiDo(t, call.method, call.path, member, call.body))
+	}
+
+	rec = apiDo(t, http.MethodPost, "/api/keys", owner, map[string]any{
+		"name": "reader", "label": "Reader",
+		"grants": []any{map[string]any{"object": "company", "can_read": true, "can_write": true}},
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	var key apiKeyView
+	mustJSON(t, rec, &key)
+	requireExactForbidden(t, apiDo(t, http.MethodGet, "/api/meta/objects", key.Token, nil))
+	for _, path := range companyCatalogReads() {
+		requireExactForbidden(t, apiDo(t, http.MethodGet, path, key.Token, nil))
+	}
+}
+
+func companyCatalogReads() []string {
+	return []string{
+		"/api/meta/objects/company",
+		"/api/meta/objects/company/views",
+		"/api/meta/objects/company/views/all",
+		"/api/meta/objects/company/layouts",
+		"/api/meta/objects/company/layouts/record",
+		"/api/meta/objects/company/pages",
+		"/api/meta/objects/company/pages/list",
+		"/api/meta/objects/company/relationships",
+	}
+}
+
+func listObjectNames(t *testing.T, token string) string {
+	t.Helper()
+	rec := apiDo(t, http.MethodGet, "/api/meta/objects", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var listed struct {
+		Objects []objectView `json:"objects"`
+	}
+	mustJSON(t, rec, &listed)
+	names := make([]string, 0, len(listed.Objects))
+	for _, object := range listed.Objects {
+		names = append(names, object.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+func requireExactForbidden(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	requireStatus(t, rec, http.StatusForbidden)
+	if strings.TrimSpace(rec.Body.String()) != `{"error":"forbidden"}` {
+		t.Fatalf("body %s", rec.Body.String())
 	}
 }

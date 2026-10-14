@@ -79,7 +79,12 @@ func (s *server) listObjects(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"objects": views})
+	readable, err := s.readableObjectViews(r.Context(), a, views)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"objects": readable})
 }
 
 func (s *server) getObject(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +98,27 @@ func (s *server) getObject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr(http.StatusNotFound, "not found"))
 		return
 	}
+	if err := s.authorize(r.Context(), a, views[0].ID, false); err != nil {
+		writeErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, views[0])
+}
+
+func (s *server) readableObjectViews(ctx context.Context, a actor, views []objectView) ([]objectView, error) {
+	readable := []objectView{}
+	for _, view := range views {
+		err := s.authorize(ctx, a, view.ID, false)
+		if err == nil {
+			readable = append(readable, view)
+			continue
+		}
+		if api, ok := err.(*apiError); ok && api.status == http.StatusForbidden {
+			continue
+		}
+		return nil, err
+	}
+	return readable, nil
 }
 
 func validateObjectBody(body objectBody) error {

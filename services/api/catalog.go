@@ -92,6 +92,17 @@ func (s *server) orgObject(r *http.Request) (actor, string, error) {
 	return a, id, err
 }
 
+func (s *server) objectForRead(r *http.Request) (actor, string, error) {
+	a, id, err := s.orgObject(r)
+	if err != nil {
+		return a, "", err
+	}
+	if err := s.authorize(r.Context(), a, id, false); err != nil {
+		return a, "", err
+	}
+	return a, id, nil
+}
+
 func insertDefaultCatalog(ctx context.Context, tx pgx.Tx, orgID, objectID string) error {
 	_, err := tx.Exec(ctx, `
 		insert into view_definitions
@@ -120,7 +131,7 @@ func insertDefaultCatalog(ctx context.Context, tx pgx.Tx, orgID, objectID string
 }
 
 func (s *server) listViews(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -134,7 +145,7 @@ func (s *server) listViews(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getView(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -413,7 +424,7 @@ func lockView(ctx context.Context, tx pgx.Tx, orgID, objectID, name string) (sto
 }
 
 func (s *server) listLayouts(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -427,7 +438,7 @@ func (s *server) listLayouts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getLayout(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -658,7 +669,7 @@ func lockLayout(ctx context.Context, tx pgx.Tx, orgID, objectID, name string) (s
 }
 
 func (s *server) listPages(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -672,7 +683,7 @@ func (s *server) listPages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getPage(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -894,7 +905,7 @@ func lockPage(ctx context.Context, tx pgx.Tx, orgID, objectID, name string) (sto
 }
 
 func (s *server) listRelationships(w http.ResponseWriter, r *http.Request) {
-	a, objectID, err := s.orgObject(r)
+	a, objectID, err := s.objectForRead(r)
 	if err != nil {
 		writeErr(w, err)
 		return
