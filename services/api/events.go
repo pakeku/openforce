@@ -29,6 +29,7 @@ var eventNames = map[string]struct{}{
 	"object.created":     {},
 	"workflow.started":   {},
 	"workflow.completed": {},
+	"schedule.tick":      {},
 }
 
 type eventWrite struct {
@@ -65,13 +66,13 @@ func knownEvent(name string) bool {
 }
 
 // insertEvent participates in the caller's transaction, so the event is stored only when that change commits.
-func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) error {
+func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) (string, error) {
 	if ev.Payload == nil {
 		ev.Payload = map[string]any{}
 	}
 	raw, err := json.Marshal(ev.Payload)
 	if err != nil {
-		return err
+		return "", err
 	}
 	eventID := uuid.NewString()
 	_, err = tx.Exec(ctx, `
@@ -79,9 +80,9 @@ func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) er
 		values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
 	`, eventID, orgID, ev.Name, ev.ActorID, uuidOrNil(ev.ObjectID), uuidOrNil(ev.RecordID), ev.Source, string(raw))
 	if err != nil {
-		return err
+		return "", err
 	}
-	return enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name, ev.ObjectID, ev.CauseAutomationID)
+	return eventID, enqueueDeliveries(ctx, tx, orgID, eventID, ev.Name, ev.ObjectID, ev.CauseAutomationID)
 }
 
 func enqueueDeliveries(ctx context.Context, tx pgx.Tx, orgID, eventID, name, objectID, excludeAutomationID string) error {
@@ -124,7 +125,7 @@ func fieldChanges(defs []fieldDef, before, patch map[string]any) []fieldChange {
 
 func emitFieldChanges(ctx context.Context, tx pgx.Tx, orgID, actorID, objectID, recordID, objectName, source string, changes []fieldChange) error {
 	for _, change := range changes {
-		err := insertEvent(ctx, tx, orgID, eventWrite{
+		_, err := insertEvent(ctx, tx, orgID, eventWrite{
 			Name:     "field.changed",
 			ActorID:  actorID,
 			ObjectID: objectID,

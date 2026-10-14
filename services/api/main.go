@@ -87,6 +87,10 @@ func runWork() int {
 		defer client.Close()
 	}
 	s := &server{pool: pool, redis: client}
+	if _, err := s.enqueueDueSchedules(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if err := s.publishDueJobs(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -185,7 +185,7 @@ func (s *server) patchRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	objectName := r.PathValue("name")
-	if err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
 		Name:     "record.updated",
 		ActorID:  a.UserID,
 		ObjectID: objectID,
@@ -246,7 +246,7 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr(http.StatusNotFound, "not found"))
 		return
 	}
-	if err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
 		Name:     "record.deleted",
 		ActorID:  a.UserID,
 		ObjectID: objectID,
@@ -294,7 +294,7 @@ func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName
 	if err != nil {
 		return recordView{}, err
 	}
-	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(ctx, tx, a.OrgID, eventWrite{
 		Name:              "record.created",
 		ActorID:           a.UserID,
 		ObjectID:          objectID,
@@ -365,7 +365,7 @@ func (s *server) writeRecordPatch(ctx context.Context, a actor, objectID, object
 	if err != nil {
 		return recordView{}, err
 	}
-	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(ctx, tx, a.OrgID, eventWrite{
 		Name:              "record.updated",
 		ActorID:           a.UserID,
 		ObjectID:          objectID,
@@ -410,7 +410,7 @@ func (s *server) writeRecordDelete(ctx context.Context, a actor, objectID, objec
 	if tag.RowsAffected() == 0 {
 		return apiErr(http.StatusNotFound, "not found")
 	}
-	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(ctx, tx, a.OrgID, eventWrite{
 		Name:              "record.deleted",
 		ActorID:           a.UserID,
 		ObjectID:          objectID,

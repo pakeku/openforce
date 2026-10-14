@@ -235,7 +235,7 @@ func TestEventFailureRollsBackRecord(t *testing.T) {
 	`, id, orgID, object.ID); err != nil {
 		t.Fatal(err)
 	}
-	err = insertEvent(ctx, tx, orgID, eventWrite{
+	_, err = insertEvent(ctx, tx, orgID, eventWrite{
 		Name:     "not.an.event",
 		ActorID:  userOf(t, token),
 		ObjectID: object.ID,

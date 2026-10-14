@@ -162,7 +162,7 @@ func (s *server) insertObject(ctx context.Context, a actor, body objectBody) (ob
 	if err := insertDefaultCatalog(ctx, tx, a.OrgID, objectID); err != nil {
 		return objectView{}, err
 	}
-	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+	if _, err := insertEvent(ctx, tx, a.OrgID, eventWrite{
 		Name:     "object.created",
 		ActorID:  a.UserID,
 		ObjectID: objectID,

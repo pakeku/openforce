@@ -112,7 +112,7 @@ func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role s
 	`, uuid.NewString(), orgID, userID, hash); err != nil {
 		return "", "", err
 	}
-	if err = insertEvent(ctx, tx, orgID, eventWrite{
+	if _, err = insertEvent(ctx, tx, orgID, eventWrite{
 		Name:    "user.created",
 		ActorID: userID,
 		Source:  sourceAdmin,
@@ -158,7 +158,7 @@ func (s *server) addMember(ctx context.Context, orgID, userName, email string) (
 	`, uuid.NewString(), orgID, userID, hash); err != nil {
 		return "", err
 	}
-	if err = insertEvent(ctx, tx, orgID, eventWrite{
+	if _, err = insertEvent(ctx, tx, orgID, eventWrite{
 		Name:    "user.created",
 		ActorID: actorID,
 		Source:  sourceAdmin,

@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,8 +37,14 @@ type automationInput struct {
 	Label      string             `json:"label"`
 	Event      string             `json:"event"`
 	Object     string             `json:"object"`
+	Every      string             `json:"every"`
 	Conditions []condition        `json:"conditions"`
 	Actions    []automationAction `json:"actions"`
+}
+
+type automationPlan struct {
+	ObjectID string
+	Every    int
 }
 
 type automationPatch struct {
@@ -50,9 +58,11 @@ type automationView struct {
 	ID         string             `json:"id"`
 	Name       string             `json:"name"`
 	Label      string             `json:"label"`
-	Event      string             `json:"event"`
-	Object     string             `json:"object"`
+	Event      string             `json:"event,omitempty"`
+	Object     string             `json:"object,omitempty"`
 	ObjectID   string             `json:"-"`
+	Every      string             `json:"every,omitempty"`
+	NextRun    *time.Time         `json:"next_run_at,omitempty"`
 	Version    int                `json:"version"`
 	Conditions []condition        `json:"conditions"`
 	Actions    []automationAction `json:"actions"`
@@ -118,7 +128,7 @@ func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	objectID, err := s.prepareAutomation(r.Context(), a.OrgID, &body)
+	plan, err := s.prepareAutomation(r.Context(), a.OrgID, &body)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -130,14 +140,26 @@ func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	view := automationView{
 		ID: uuid.NewString(), Name: body.Name, Label: body.Label, Event: body.Event,
-		Object: body.Object, ObjectID: objectID, Version: 1,
+		Object: body.Object, ObjectID: plan.ObjectID, Version: 1,
 		Conditions: body.Conditions, Actions: body.Actions,
+	}
+	var eventName, every, nextAt, actor any
+	if view.Event != "" {
+		eventName = view.Event
+	}
+	if plan.Every > 0 {
+		when := time.Now().UTC().Add(time.Duration(plan.Every) * time.Second)
+		every = plan.Every
+		nextAt = when
+		actor = a.UserID
+		view.Every = formatEvery(plan.Every)
+		view.NextRun = &when
 	}
 	_, err = s.pool.Exec(r.Context(), `
 		insert into automation_definitions
-			(id, organization_id, name, label, event_name, object_id, conditions, actions)
-		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
-	`, view.ID, a.OrgID, view.Name, view.Label, view.Event, objectID, conditions, actions)
+			(id, organization_id, name, label, event_name, object_id, conditions, actions, every_seconds, next_run_at, actor_id)
+		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11)
+	`, view.ID, a.OrgID, view.Name, view.Label, eventName, uuidOrNil(plan.ObjectID), conditions, actions, every, nextAt, actor)
 	if isUnique(err) {
 		writeErr(w, apiErr(http.StatusConflict, "automation already exists"))
 		return
@@ -201,7 +223,7 @@ func (s *server) patchAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	next := automationInput{
 		Name: current.Name, Label: current.Label, Event: current.Event, Object: current.Object,
-		Conditions: current.Conditions, Actions: current.Actions,
+		Every: current.Every, Conditions: current.Conditions, Actions: current.Actions,
 	}
 	if body.Label != nil {
 		next.Label = *body.Label
@@ -307,46 +329,99 @@ func (s *server) listExecutions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"executions": executions})
 }
 
-func (s *server) prepareAutomation(ctx context.Context, orgID string, body *automationInput) (string, error) {
+func (s *server) prepareAutomation(ctx context.Context, orgID string, body *automationInput) (automationPlan, error) {
 	if !namePattern.MatchString(body.Name) {
-		return "", apiErr(http.StatusBadRequest, "invalid name")
+		return automationPlan{}, apiErr(http.StatusBadRequest, "invalid name")
 	}
 	if body.Label == "" {
-		return "", apiErr(http.StatusBadRequest, "label is required")
+		return automationPlan{}, apiErr(http.StatusBadRequest, "label is required")
+	}
+	every, err := parseEvery(body.Every)
+	if err != nil {
+		return automationPlan{}, err
+	}
+	if body.Conditions == nil {
+		body.Conditions = []condition{}
+	}
+	if every > 0 {
+		if body.Event != "" || body.Object != "" || len(body.Conditions) > 0 {
+			return automationPlan{}, apiErr(http.StatusBadRequest, "invalid schedule")
+		}
+		if err := s.validateActions(ctx, orgID, "", map[string]fieldDef{}, body.Actions); err != nil {
+			return automationPlan{}, err
+		}
+		return automationPlan{Every: every}, nil
 	}
 	switch body.Event {
 	case "record.created", "record.updated", "record.deleted":
 	default:
-		return "", apiErr(http.StatusBadRequest, "invalid event")
+		return automationPlan{}, apiErr(http.StatusBadRequest, "invalid event")
 	}
 	if !namePattern.MatchString(body.Object) {
-		return "", apiErr(http.StatusBadRequest, "invalid name")
+		return automationPlan{}, apiErr(http.StatusBadRequest, "invalid name")
 	}
 	objectID, err := s.objectByName(ctx, orgID, body.Object)
 	if err != nil {
-		return "", err
+		return automationPlan{}, err
 	}
 	defs, err := s.fieldDefs(ctx, objectID)
 	if err != nil {
-		return "", err
-	}
-	if body.Conditions == nil {
-		body.Conditions = []condition{}
+		return automationPlan{}, err
 	}
 	byName := indexFields(defs)
 	for _, cond := range body.Conditions {
 		def, ok := byName[cond.Field]
 		if !ok {
-			return "", apiErrf(http.StatusBadRequest, "unknown field %s", cond.Field)
+			return automationPlan{}, apiErrf(http.StatusBadRequest, "unknown field %s", cond.Field)
 		}
 		if err := validateCondition(def, cond); err != nil {
-			return "", err
+			return automationPlan{}, err
 		}
 	}
 	if err := s.validateActions(ctx, orgID, body.Object, byName, body.Actions); err != nil {
-		return "", err
+		return automationPlan{}, err
 	}
-	return objectID, nil
+	return automationPlan{ObjectID: objectID}, nil
+}
+
+func parseEvery(raw string) (int, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	if len(raw) < 2 {
+		return 0, apiErr(http.StatusBadRequest, "invalid schedule")
+	}
+	unit := raw[len(raw)-1]
+	num := raw[:len(raw)-1]
+	n, err := strconv.Atoi(num)
+	if err != nil || strconv.Itoa(n) != num || n < 1 {
+		return 0, apiErr(http.StatusBadRequest, "invalid schedule")
+	}
+	var seconds int64
+	switch unit {
+	case 'm':
+		seconds = int64(n) * 60
+	case 'h':
+		seconds = int64(n) * 3600
+	case 'd':
+		seconds = int64(n) * 86400
+	default:
+		return 0, apiErr(http.StatusBadRequest, "invalid schedule")
+	}
+	if seconds < 60 || seconds > 366*86400 {
+		return 0, apiErr(http.StatusBadRequest, "invalid schedule")
+	}
+	return int(seconds), nil
+}
+
+func formatEvery(seconds int) string {
+	if seconds >= 86400 && seconds%86400 == 0 {
+		return strconv.Itoa(seconds/86400) + "d"
+	}
+	if seconds >= 3600 && seconds%3600 == 0 {
+		return strconv.Itoa(seconds/3600) + "h"
+	}
+	return strconv.Itoa(seconds/60) + "m"
 }
 
 func validateCondition(def fieldDef, cond condition) error {
@@ -382,11 +457,14 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 	for _, action := range actions {
 		switch action.Type {
 		case "http":
-			if err := validateHTTPAction(source, action); err != nil {
+			if err := validateHTTPAction(sourceName, source, action); err != nil {
 				return err
 			}
 			continue
 		case "create", "update", "delete":
+			if sourceName == "" && action.Type != "create" {
+				return apiErr(http.StatusBadRequest, "invalid action")
+			}
 		default:
 			return apiErr(http.StatusBadRequest, "invalid action")
 		}
@@ -406,7 +484,7 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 		if action.Type == "delete" {
 			continue
 		}
-		sample, err := actionSample(source, action.Data)
+		sample, err := actionSample(sourceName, source, action.Data)
 		if err != nil {
 			return err
 		}
@@ -438,7 +516,7 @@ func (s *server) actionFields(ctx context.Context, orgID, sourceName string, sou
 	return s.fieldDefs(ctx, targetID)
 }
 
-func actionSample(source map[string]fieldDef, data map[string]any) (map[string]any, error) {
+func actionSample(sourceName string, source map[string]fieldDef, data map[string]any) (map[string]any, error) {
 	sample := map[string]any{}
 	for key, value := range data {
 		if field, ok := fieldRef(value); ok {
@@ -454,6 +532,9 @@ func actionSample(source map[string]fieldDef, data map[string]any) (map[string]a
 			continue
 		}
 		if isRecordRef(value) {
+			if sourceName == "" {
+				return nil, apiErr(http.StatusBadRequest, "invalid record")
+			}
 			sample[key] = uuid.NewString()
 			continue
 		}
@@ -529,9 +610,9 @@ func (s *server) selectAutomations(ctx context.Context, orgID, name string) ([]a
 	args := []any{orgID}
 	query := `
 		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
-			d.version, d.conditions, d.actions
+			d.version, d.conditions, d.actions, d.every_seconds, d.next_run_at
 		from automation_definitions d
-		join object_definitions o on o.id = d.object_id
+		left join object_definitions o on o.id = d.object_id
 		where d.organization_id = $1::uuid`
 	if name != "" {
 		args = append(args, name)
@@ -568,9 +649,9 @@ func (s *server) loadAutomationByName(ctx context.Context, orgID, name string) (
 func lockAutomation(ctx context.Context, tx pgx.Tx, orgID, name string) (automationView, error) {
 	row := tx.QueryRow(ctx, `
 		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
-			d.version, d.conditions, d.actions
+			d.version, d.conditions, d.actions, d.every_seconds, d.next_run_at
 		from automation_definitions d
-		join object_definitions o on o.id = d.object_id
+		left join object_definitions o on o.id = d.object_id
 		where d.organization_id = $1::uuid and d.name = $2
 		for update of d
 	`, orgID, name)
@@ -583,9 +664,22 @@ func lockAutomation(ctx context.Context, tx pgx.Tx, orgID, name string) (automat
 
 func scanAutomation(row pgx.Row) (automationView, error) {
 	var view automationView
+	var eventName, objectName, objectID sql.NullString
+	var every sql.NullInt32
+	var next sql.NullTime
 	var conditions, actions []byte
-	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Event, &view.Object, &view.ObjectID, &view.Version, &conditions, &actions); err != nil {
+	if err := row.Scan(&view.ID, &view.Name, &view.Label, &eventName, &objectName, &objectID, &view.Version, &conditions, &actions, &every, &next); err != nil {
 		return view, err
+	}
+	view.Event = eventName.String
+	view.Object = objectName.String
+	view.ObjectID = objectID.String
+	if every.Valid {
+		view.Every = formatEvery(int(every.Int32))
+	}
+	if next.Valid {
+		when := next.Time
+		view.NextRun = &when
 	}
 	view.Conditions = []condition{}
 	view.Actions = []automationAction{}
@@ -602,6 +696,82 @@ func scanAutomation(row pgx.Row) (automationView, error) {
 		view.Actions = []automationAction{}
 	}
 	return view, nil
+}
+
+// enqueueDueSchedules stores a tick for each workflow whose clock has arrived.
+// The request that defined the workflow does not run it.
+func (s *server) enqueueDueSchedules(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := s.enqueueScheduleBatch(ctx, 100)
+		total += n
+		if err != nil || n == 0 {
+			return total, err
+		}
+	}
+}
+
+func (s *server) enqueueScheduleBatch(ctx context.Context, limit int) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		select id::text, organization_id::text, name, actor_id::text
+		from automation_definitions
+		where every_seconds is not null and next_run_at <= now()
+		order by next_run_at, id
+		limit $1
+		for update skip locked
+	`, limit)
+	if err != nil {
+		return 0, err
+	}
+	type dueSchedule struct {
+		id, org, name, actor string
+	}
+	due := []dueSchedule{}
+	for rows.Next() {
+		var item dueSchedule
+		if err := rows.Scan(&item.id, &item.org, &item.name, &item.actor); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		due = append(due, item)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(due) == 0 {
+		return 0, nil
+	}
+	for _, item := range due {
+		eventID, err := insertEvent(ctx, tx, item.org, eventWrite{
+			Name:    "schedule.tick",
+			ActorID: item.actor,
+			Source:  sourceAPI,
+			Payload: map[string]any{"automation": item.name},
+		})
+		if err != nil {
+			return 0, err
+		}
+		if err := enqueueJob(ctx, tx, item.org, eventID, "automation", "", item.id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `
+			update automation_definitions
+			set next_run_at = now() + make_interval(secs => every_seconds)
+			where id = $1::uuid
+		`, item.id); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(due), nil
 }
 
 func (s *server) runAutomation(ctx context.Context, job dueJob) error {
@@ -695,14 +865,14 @@ func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, 
 	}
 }
 
-func validateHTTPAction(source map[string]fieldDef, action automationAction) error {
+func validateHTTPAction(sourceName string, source map[string]fieldDef, action automationAction) error {
 	if err := validHTTPURL(action.URL); err != nil {
 		return err
 	}
-	return walkHTTPValue(source, action.Data)
+	return walkHTTPValue(sourceName, source, action.Data)
 }
 
-func walkHTTPValue(source map[string]fieldDef, value any) error {
+func walkHTTPValue(sourceName string, source map[string]fieldDef, value any) error {
 	if field, ok := fieldRef(value); ok {
 		if _, known := source[field]; !known {
 			return apiErrf(http.StatusBadRequest, "unknown field %s", field)
@@ -710,6 +880,9 @@ func walkHTTPValue(source map[string]fieldDef, value any) error {
 		return nil
 	}
 	if isRecordRef(value) {
+		if sourceName == "" {
+			return apiErr(http.StatusBadRequest, "invalid record")
+		}
 		return nil
 	}
 	switch typed := value.(type) {
@@ -717,14 +890,14 @@ func walkHTTPValue(source map[string]fieldDef, value any) error {
 		return nil
 	case map[string]any:
 		for _, child := range typed {
-			if err := walkHTTPValue(source, child); err != nil {
+			if err := walkHTTPValue(sourceName, source, child); err != nil {
 				return err
 			}
 		}
 		return nil
 	case []any:
 		for _, child := range typed {
-			if err := walkHTTPValue(source, child); err != nil {
+			if err := walkHTTPValue(sourceName, source, child); err != nil {
 				return err
 			}
 		}
