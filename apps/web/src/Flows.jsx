@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow, applyEdgeChanges, applyNodeChanges } from "@xyflow/react"
 import { api } from "./api.js"
+import { Button, Notice } from "./ui.jsx"
 import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
 
 const events = ["record.created", "record.updated", "record.deleted"]
@@ -251,17 +252,17 @@ export function Flows({ token }) {
       <main>
         <div className="title-row">
           <h1>Flows</h1>
-          <button onClick={openDraft}>New flow</button>
+          <Button onClick={openDraft}>New flow</Button>
         </div>
-        {error && <p className="error">{error}</p>}
-        {automations.length === 0 && <p className="empty">No flows yet.</p>}
+        <Notice tone="error">{error}</Notice>
+        {automations.length === 0 && <Notice>No flows yet.</Notice>}
         <ul className="object-list">
           {automations.map((flow) => (
             <li key={flow.id}>
-              <button onClick={() => openSaved(flow.name)}>
+              <Button onClick={() => openSaved(flow.name)}>
                 <strong>{flow.label}</strong>
                 <span>{flow.every ? `every ${flow.every}` : `${flow.event} · ${flow.object}`}</span>
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -275,11 +276,11 @@ export function Flows({ token }) {
   return (
     <main>
       <div className="title-row">
-        <button className="text" onClick={() => { setEditor(null); setError("") }}>Flows</button>
+        <Button variant="text" onClick={() => { setEditor(null); setError("") }}>Flows</Button>
         <h1>{selected?.data.label || editor.name || "New flow"}</h1>
         {editor.saved && <span className="version">version {editor.version}</span>}
       </div>
-      {error && <p className="error">{error}</p>}
+      <Notice tone="error">{error}</Notice>
       <div className="flow-layout">
         <div className="flow-canvas">
           <ReactFlow
@@ -302,7 +303,7 @@ export function Flows({ token }) {
           </ReactFlow>
         </div>
         <form className="panel" onSubmit={save}>
-          <p className="empty">Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path.</p>
+          <Notice>Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path.</Notice>
           {selected?.type === "trigger" && (
             <>
               <h2>Trigger</h2>
@@ -355,17 +356,17 @@ export function Flows({ token }) {
             <ActionForm node={selected} objects={objects} source={editor.object} onChange={(data) => patchNode(selected.id, data)} onDelete={() => deleteStep(selected.id)} />
           )}
           <div className="actions">
-            {!schedule && <button type="button" className="secondary" onClick={() => addStep("condition")}>Add condition</button>}
-            <button type="button" className="secondary" onClick={() => addStep("action")}>Add action</button>
-            <button type="button" className="secondary" onClick={() => addStep("approval")}>Add approval</button>
-            {!schedule && <button type="button" className="secondary" onClick={() => addStep("else")}>Add else</button>}
-            <button>Save</button>
+            {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("condition")}>Add condition</Button>}
+            <Button type="button" variant="secondary" onClick={() => addStep("action")}>Add action</Button>
+            <Button type="button" variant="secondary" onClick={() => addStep("approval")}>Add approval</Button>
+            {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("else")}>Add else</Button>}
+            <Button>Save</Button>
           </div>
-          {editor.saved && <button type="button" className="secondary" onClick={removeFlow}>Delete flow</button>}
+          {editor.saved && <Button type="button" variant="secondary" onClick={removeFlow}>Delete flow</Button>}
           {editor.saved && (
             <>
               <h2>Executions</h2>
-              {executions.length === 0 && <p className="empty">None yet.</p>}
+              {executions.length === 0 && <Notice>None yet.</Notice>}
               <ul className="executions">
                 {executions.map((item) => (
                   <li key={item.id}><span>{item.status}{item.path ? ` · ${item.path}` : ""}</span><span className="empty">{item.created_at}</span></li>
@@ -400,7 +401,7 @@ function ConditionForm({ node, fields, onChange, onDelete }) {
         Value
         <input value={node.data.value} onChange={(event) => onChange({ value: event.target.value })} />
       </label>
-      <button type="button" className="secondary" onClick={onDelete}>Delete step</button>
+      <Button type="button" variant="secondary" onClick={onDelete}>Delete step</Button>
     </>
   )
 }
@@ -473,9 +474,9 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
         </div>
       ))}
       {data.type !== "delete" && data.type !== "approval" && (
-        <button type="button" className="secondary" onClick={() => patch({ rows: [...data.rows, { field: "", mode: "literal", value: "" }] })}>Add value</button>
+        <Button type="button" variant="secondary" onClick={() => patch({ rows: [...data.rows, { field: "", mode: "literal", value: "" }] })}>Add value</Button>
       )}
-      <button type="button" className="secondary" onClick={onDelete}>Delete step</button>
+      <Button type="button" variant="secondary" onClick={onDelete}>Delete step</Button>
     </>
   )
 }

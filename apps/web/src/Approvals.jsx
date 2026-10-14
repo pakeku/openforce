@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { api } from "./api.js"
+import { Actions, Button, Notice, Page } from "./ui.jsx"
 
 export function Approvals({ token }) {
   const [rows, setRows] = useState([])
@@ -29,10 +30,9 @@ export function Approvals({ token }) {
   }
 
   return (
-    <main>
-      <h1>Approvals</h1>
-      {error && <p className="error">{error}</p>}
-      {rows.length === 0 && <p className="empty">No approvals waiting.</p>}
+    <Page title="Approvals">
+      <Notice tone="error">{error}</Notice>
+      {rows.length === 0 && <Notice>No approvals waiting.</Notice>}
       <ul className="approval-list">
         {rows.map((row) => (
           <li key={row.id} className="approval-row">
@@ -40,13 +40,13 @@ export function Approvals({ token }) {
               <strong>{row.name}</strong>
               <span>{row.created_at}</span>
             </div>
-            <div className="actions">
-              <button type="button" onClick={() => decide(row.id, "approve")}>Approve</button>
-              <button type="button" className="secondary" onClick={() => decide(row.id, "reject")}>Reject</button>
-            </div>
+            <Actions>
+              <Button type="button" onClick={() => decide(row.id, "approve")}>Approve</Button>
+              <Button type="button" variant="secondary" onClick={() => decide(row.id, "reject")}>Reject</Button>
+            </Actions>
           </li>
         ))}
       </ul>
-    </main>
+    </Page>
   )
 }

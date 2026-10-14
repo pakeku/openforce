@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { api } from "./api.js"
+import { Actions, Button, Field, Notice, Page, Panel } from "./ui.jsx"
 
 export function TablePage({ token, object, open }) {
   const [columns, setColumns] = useState([])
@@ -31,12 +32,8 @@ export function TablePage({ token, object, open }) {
   }
 
   return (
-    <main>
-      <div className="title-row">
-        <h1>{object}</h1>
-        <button onClick={() => open({ page: "record", object })}>New record</button>
-      </div>
-      {error && <p className="error">{error}</p>}
+    <Page title={object} actions={<Button onClick={() => open({ page: "record", object })}>New record</Button>}>
+      <Notice tone="error">{error}</Notice>
       <form className="filters" onSubmit={applyFilter}>
         <input value={field} onChange={(event) => setField(event.target.value)} aria-label="Filter field" />
         <select value={operator} onChange={(event) => setOperator(event.target.value)} aria-label="Filter operator">
@@ -45,7 +42,7 @@ export function TablePage({ token, object, open }) {
           <option value="gte">at least</option>
         </select>
         <input value={value} onChange={(event) => setValue(event.target.value)} aria-label="Filter value" />
-        <button>Filter</button>
+        <Button>Filter</Button>
       </form>
       <div className="table-wrap">
         <table>
@@ -61,8 +58,8 @@ export function TablePage({ token, object, open }) {
           </tbody>
         </table>
       </div>
-      {records.length === 0 && <p className="empty">No records.</p>}
-    </main>
+      <Notice>{records.length === 0 ? "No records." : ""}</Notice>
+    </Page>
   )
 }
 
@@ -143,52 +140,50 @@ export function RecordPage({ token, object, id, open }) {
   }
 
   return (
-    <main>
-      <div className="title-row">
-        <h1>{data.name || (id ? object : `New ${object}`)}</h1>
-        <button className="secondary" onClick={() => open({ page: "table", object })}>Back</button>
-      </div>
-      {error && <p className="error">{error}</p>}
-      <form className="panel" onSubmit={save}>
+    <Page
+      title={data.name || (id ? object : `New ${object}`)}
+      actions={<Button variant="secondary" onClick={() => open({ page: "table", object })}>Back</Button>}
+    >
+      <Notice tone="error">{error}</Notice>
+      <Panel onSubmit={save}>
         {layout.map((name) => {
           const field = byName[name]
           if (!field) return null
           const link = relationships.find((item) => item.name === name && data[name])
           return (
-            <label key={name}>
-              {field.name}{field.required ? " *" : ""}
+            <Field key={name} label={`${field.name}${field.required ? " *" : ""}`}>
               <FieldInput field={field} value={data[name]} onChange={(value) => setValue(name, value)} />
               {link && (
-                <button type="button" className="text" onClick={() => open({ page: "record", object: link.to, id: data[name] })}>
+                <Button type="button" variant="text" onClick={() => open({ page: "record", object: link.to, id: data[name] })}>
                   Open {link.to}
-                </button>
+                </Button>
               )}
-            </label>
+            </Field>
           )
         })}
-        <div className="actions">
-          <button>{id ? "Save" : "Create"}</button>
-          {id && <button type="button" className="secondary" onClick={remove}>Delete</button>}
+        <Actions>
+          <Button>{id ? "Save" : "Create"}</Button>
+          {id && <Button type="button" variant="secondary" onClick={remove}>Delete</Button>}
           {id && <span className="version">Version {version}</span>}
-        </div>
-      </form>
+        </Actions>
+      </Panel>
       {related.map((group) => (
         <section key={group.name}>
           <h2>{group.name}</h2>
           <ul className="object-list">
             {group.records.map((record) => (
               <li key={record.id}>
-                <button onClick={() => open({ page: "record", object: group.to, id: record.id })}>
+                <Button onClick={() => open({ page: "record", object: group.to, id: record.id })}>
                   <strong>{record.data.name || record.id}</strong>
                   <span>{group.to}</span>
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
-          {group.records.length === 0 && <p className="empty">None yet.</p>}
+          <Notice>{group.records.length === 0 ? "None yet." : ""}</Notice>
         </section>
       ))}
-    </main>
+    </Page>
   )
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { api } from "./api.js"
+import { Actions, Button, Field, Notice, Page, Panel } from "./ui.jsx"
 
 const fieldTypes = ["text", "number", "currency", "date", "boolean", "enum"]
 
@@ -47,23 +48,21 @@ export function Objects({ token, open }) {
   }
 
   return (
-    <main>
-      <h1>Objects</h1>
-      {error && <p className="error">{error}</p>}
+    <Page title="Objects">
+      <Notice tone="error">{error}</Notice>
       <ul className="object-list">
         {objects.map((object) => (
           <li key={object.id}>
-            <button onClick={() => open({ page: "table", object: object.name })}>
+            <Button onClick={() => open({ page: "table", object: object.name })}>
               <strong>{object.label}</strong>
               <span>{object.name}</span>
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
-      <form className="panel" onSubmit={createObject}>
-        <h2>New object</h2>
-        <label>Name<input value={name} onChange={(event) => setName(event.target.value)} required /></label>
-        <label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} required /></label>
+      <Panel title="New object" onSubmit={createObject}>
+        <Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
+        <Field label="Label"><input value={label} onChange={(event) => setLabel(event.target.value)} required /></Field>
         {fields.map((field, index) => (
           <div className="field-row" key={index}>
             <input value={field.name} aria-label="Field name" onChange={(event) => updateField(index, { name: event.target.value })} />
@@ -76,11 +75,11 @@ export function Objects({ token, open }) {
             )}
           </div>
         ))}
-        <div className="actions">
-          <button type="button" className="secondary" onClick={() => setFields([...fields, { name: "", type: "text", required: false, options: "" }])}>Add field</button>
-          <button>Create object</button>
-        </div>
-      </form>
-    </main>
+        <Actions>
+          <Button type="button" variant="secondary" onClick={() => setFields([...fields, { name: "", type: "text", required: false, options: "" }])}>Add field</Button>
+          <Button>Create object</Button>
+        </Actions>
+      </Panel>
+    </Page>
   )
 }

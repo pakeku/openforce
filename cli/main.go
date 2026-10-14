@@ -13,11 +13,13 @@ func main() {
 
 func run(args []string, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: openforce pull|push -url URL -token TOKEN -dir DIR")
+		fmt.Fprintln(stderr, "usage: openforce pull|push|setup")
 		return 2
 	}
 	cmd := args[0]
 	switch cmd {
+	case "setup":
+		return setup(args[1:], os.Stdin, os.Stdout, stderr, "", nil, nil)
 	case "pull", "push":
 	default:
 		fmt.Fprintf(stderr, "unknown command %s\n", cmd)

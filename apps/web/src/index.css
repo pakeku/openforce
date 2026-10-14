@@ -32,12 +32,30 @@ button.text { border: 0; padding: 0; color: #1d4e89; }
 
 .app { max-width: 960px; margin: 0 auto; padding: 1rem; }
 
-header {
+header, .topbar {
   display: flex;
-  justify-content: space-between;
   gap: 1rem;
   align-items: center;
   margin-bottom: 1.5rem;
+}
+
+.topbar nav { display: flex; gap: 0.75rem; margin-right: auto; }
+.topbar > button.brand { margin-right: 0.25rem; }
+
+.gate {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.field { display: block; margin-bottom: 0.75rem; }
+.field input, .field select { display: block; width: 100%; margin-top: 0.25rem; }
+.field input[type="checkbox"] { display: inline; width: auto; margin-top: 0.35rem; }
+
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid #1d4e89;
+  outline-offset: 2px;
 }
 
 header form, .filters, .actions, .field-row, .title-row {
@@ -152,7 +170,8 @@ button.text[aria-current="page"] { font-weight: 700; }
 .approval-row span { color: #667085; display: block; }
 
 @media (max-width: 800px) {
-  header { align-items: stretch; flex-direction: column; }
+  header, .topbar { align-items: stretch; flex-direction: column; }
+  .gate { grid-template-columns: 1fr; }
   .header-auth { align-items: stretch; }
   header input { min-width: 0; width: 100%; }
   .flow-layout { grid-template-columns: 1fr; }
