@@ -1090,7 +1090,18 @@ func (s *server) memberActor(ctx context.Context, orgID, userID string) (actor, 
 	if err != nil {
 		return actor{}, err
 	}
-	return actor{UserID: userID, OrgID: orgID, Role: role}, nil
+	a := actor{UserID: userID, OrgID: orgID, Role: role}
+	if role != "service" {
+		return a, nil
+	}
+	err = s.pool.QueryRow(ctx, `
+		select id::text from api_keys
+		where organization_id = $1::uuid and user_id = $2::uuid
+	`, orgID, userID).Scan(&a.KeyID)
+	if err != nil {
+		return actor{}, err
+	}
+	return a, nil
 }
 
 func (s *server) runCreateAction(ctx context.Context, a actor, recordID string, record map[string]any, action automationAction, cause string) (string, error) {

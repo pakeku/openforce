@@ -16,6 +16,7 @@ type actor struct {
 	UserID string
 	OrgID  string
 	Role   string
+	KeyID  string
 }
 
 type actorKeyType struct{}
@@ -36,11 +37,22 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *server) requireUser(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if actorFrom(r.Context()).Role == "service" {
+			writeErr(w, apiErr(http.StatusForbidden, "forbidden"))
+			return
+		}
+		next(w, r)
+	})
+}
+
 func (s *server) authenticate(r *http.Request) (actor, error) {
 	raw, err := bearerToken(r.Header.Get("Authorization"))
 	if err != nil {
 		return actor{}, err
 	}
+	hash := tokenHash(raw)
 	var a actor
 	err = s.pool.QueryRow(r.Context(), `
 		select t.user_id::text, t.organization_id::text, m.role
@@ -49,7 +61,21 @@ func (s *server) authenticate(r *http.Request) (actor, error) {
 		  on m.user_id = t.user_id
 		 and m.organization_id = t.organization_id
 		where t.token_hash = $1
-	`, tokenHash(raw)).Scan(&a.UserID, &a.OrgID, &a.Role)
+	`, hash).Scan(&a.UserID, &a.OrgID, &a.Role)
+	if err == nil {
+		return a, nil
+	}
+	if err != pgx.ErrNoRows {
+		return actor{}, err
+	}
+	err = s.pool.QueryRow(r.Context(), `
+		select k.user_id::text, k.organization_id::text, m.role, k.id::text
+		from api_keys k
+		join memberships m
+		  on m.user_id = k.user_id
+		 and m.organization_id = k.organization_id
+		where k.token_hash = $1
+	`, hash).Scan(&a.UserID, &a.OrgID, &a.Role, &a.KeyID)
 	if err == pgx.ErrNoRows {
 		return actor{}, apiErr(http.StatusUnauthorized, "unauthorized")
 	}

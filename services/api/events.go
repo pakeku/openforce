@@ -208,8 +208,20 @@ func (s *server) selectEvents(ctx context.Context, a actor, name, recordID strin
 		args = append(args, recordID)
 		query += fmt.Sprintf(" and e.record_id = $%d::uuid", len(args))
 	}
-	args = append(args, a.Role)
-	query += fmt.Sprintf(`
+	if a.Role == "service" {
+		args = append(args, a.KeyID)
+		query += fmt.Sprintf(`
+			and e.name in ('record.created', 'record.updated', 'record.deleted', 'field.changed')
+			and exists (
+				select 1 from api_key_permissions p
+				where p.api_key_id = $%d::uuid
+					and p.object_id = e.object_id
+					and p.can_read
+			)
+		order by e.seq`, len(args))
+	} else {
+		args = append(args, a.Role)
+		query += fmt.Sprintf(`
 			and (
 				$%d = 'owner'
 				or e.name not in ('record.created', 'record.updated', 'record.deleted', 'field.changed')
@@ -222,6 +234,7 @@ func (s *server) selectEvents(ctx context.Context, a actor, name, recordID strin
 				)
 			)
 		order by e.seq`, len(args))
+	}
 	args = append(args, limit)
 	query += fmt.Sprintf(" limit $%d", len(args))
 	rows, err := s.pool.Query(ctx, query, args...)

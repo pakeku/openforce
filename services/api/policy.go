@@ -54,6 +54,9 @@ func (s *server) authorize(ctx context.Context, a actor, objectID string, write 
 	if a.Role == "owner" {
 		return nil
 	}
+	if a.Role == "service" {
+		return s.authorizeKey(ctx, a, objectID, write)
+	}
 	if a.Role != "member" {
 		return apiErr(http.StatusForbidden, "forbidden")
 	}

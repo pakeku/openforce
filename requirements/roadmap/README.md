@@ -159,6 +159,8 @@ OpenAPI
 
 **Goal.** A developer can build an entire business application on the platform without editing Openforce's core source.
 
+An owner can issue an API key for a service account. The token is returned once, and record access follows the grants on that key. OpenAPI, a CLI, and functions are still ahead.
+
 ## After the six phases
 
 These are specified, and they wait until an application can be expressed on the primitives:
