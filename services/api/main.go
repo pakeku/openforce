@@ -78,12 +78,30 @@ func runWork() int {
 		return 1
 	}
 	defer pool.Close()
-	n, err := (&server{pool: pool}).deliverJobs(ctx)
+	client, err := openRedis(os.Getenv("REDIS_URL"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Printf("delivered %d\n", n)
+	if client != nil {
+		defer client.Close()
+	}
+	s := &server{pool: pool, redis: client}
+	if err := s.publishDueJobs(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	queued, err := s.consumeQueuedJobs(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	polled, err := s.deliverJobs(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("delivered %d\n", queued+polled)
 	return 0
 }
 
@@ -95,6 +113,15 @@ func runServer() int {
 		return 1
 	}
 	defer pool.Close()
+	client, err := openRedis(os.Getenv("REDIS_URL"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if client != nil {
+		defer client.Close()
+	}
+	sharedRedis = client
 
 	addr := listenAddr()
 	log.Printf("listening on %s", addr)

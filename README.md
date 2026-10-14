@@ -52,7 +52,7 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion stores an audit job, a webhook subscription stores a delivery job, and a separate `work` command completes both. Redis and automation come in later phases.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record. A field change or a deletion stores an audit job, a webhook subscription stores a delivery job, and a separate `work` command completes both. With `REDIS_URL` set, the commit publishes due jobs to Redis so that worker can wake up. Automation comes in a later phase.
 
 ## Run the kernel
 
@@ -67,7 +67,7 @@ go run -C services/api .
 
 The seed command prints an organization id and a bearer token once. Send it as `Authorization: Bearer <token>` on `/api/*`. `GET /healthz` is public. It returns 200 when Postgres accepts a connection, and 503 when it does not.
 
-The default database URL is `postgres://openforce:openforce@localhost:5432/openforce?sslmode=disable`. Override it with `DATABASE_URL`. The API listens on `:8080`. Override the port with `PORT`, or the whole address with `ADDR`.
+The default database URL is `postgres://openforce:openforce@localhost:5432/openforce?sslmode=disable`. Override it with `DATABASE_URL`. The API listens on `:8080`. Override the port with `PORT`, or the whole address with `ADDR`. Set `REDIS_URL` to `redis://localhost:6379/0` when the worker should wake from Redis. Leave it unset to keep polling Postgres.
 
 ```text
 go test -C services/api ./...
@@ -105,7 +105,7 @@ A list accepts repeatable `filter` and `sort` parameters, such as `filter=indust
 
 A committed change also writes an event in that same transaction. Record creates, updates, and deletes emit `record.created`, `record.updated`, and `record.deleted`. A field that actually changes also emits `field.changed` with the previous value and the new one. Creating an object emits `object.created`, and creating a user emits `user.created`. `GET /api/events` accepts `name`, `record`, `after` (a sequence number), and `limit`. Record and field events are visible to the owner and to a member who can read that object. The other catalog names are visible to every member of the organization.
 
-The request does not write the audit log or call a webhook. A field change or a deletion stores an audit job in the same transaction as the event. A webhook subscription stores a delivery job for each matching event in that same transaction. `go run -C services/api . work` completes due jobs and then exits. A job that fails waits longer before the next try, and after 5 attempts it is marked dead. `GET /api/jobs` lists the caller's jobs. `GET /api/objects/{name}/{id}/audit` returns the field history in event order, including after the record is deleted.
+The request does not write the audit log or call a webhook. A field change or a deletion stores an audit job in the same transaction as the event. A webhook subscription stores a delivery job for each matching event in that same transaction. After that transaction commits, due jobs are appended to the Redis stream `openforce:jobs` when `REDIS_URL` is set. `go run -C services/api . work` reads the stream, then checks Postgres for jobs that are still due, and exits. The job row in Postgres keeps the status, the attempt count, and the dead letter. A job that fails waits longer before the next try, and after 5 attempts it is marked dead. `GET /api/jobs` lists the caller's jobs. `GET /api/objects/{name}/{id}/audit` returns the field history in event order, including after the record is deleted.
 
 `POST /api/webhooks` takes `{"url":"https://example.com/hook","events":["record.created"]}`. `work` POSTs the event as JSON. The header `X-Openforce-Signature` is `sha256=` plus the hex HMAC-SHA256 of the raw body, keyed by the subscription secret. A response outside 2xx fails the job.
 

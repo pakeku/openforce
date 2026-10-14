@@ -7,14 +7,16 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type server struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	redis *redis.Client
 }
 
 func newMux(pool *pgxpool.Pool) http.Handler {
-	s := &server{pool: pool}
+	s := &server{pool: pool, redis: sharedRedis}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(pool.Ping))
 	mux.HandleFunc("GET /api/events", s.requireAuth(s.listEvents))

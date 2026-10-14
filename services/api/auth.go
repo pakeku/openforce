@@ -120,7 +120,7 @@ func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role s
 	}); err != nil {
 		return "", "", err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err = s.committed(ctx, tx); err != nil {
 		return "", "", err
 	}
 	return orgID, raw, nil
@@ -166,7 +166,7 @@ func (s *server) addMember(ctx context.Context, orgID, userName, email string) (
 	}); err != nil {
 		return "", err
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err = s.committed(ctx, tx); err != nil {
 		return "", err
 	}
 	return raw, nil

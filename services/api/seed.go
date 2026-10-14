@@ -28,8 +28,16 @@ func runSeed(args []string) int {
 		return 1
 	}
 	defer pool.Close()
+	client, err := openRedis(os.Getenv("REDIS_URL"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if client != nil {
+		defer client.Close()
+	}
 
-	s := &server{pool: pool}
+	s := &server{pool: pool, redis: client}
 	orgID, token, err := s.bootstrap(ctx, *org, *name, *email, "owner")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

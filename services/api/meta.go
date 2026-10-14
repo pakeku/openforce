@@ -171,7 +171,7 @@ func (s *server) insertObject(ctx context.Context, a actor, body objectBody) (ob
 	}); err != nil {
 		return objectView{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.committed(ctx, tx); err != nil {
 		return objectView{}, err
 	}
 	views, err := s.loadObjects(ctx, a.OrgID, body.Name)

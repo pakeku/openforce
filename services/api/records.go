@@ -204,7 +204,7 @@ func (s *server) patchRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := s.committed(r.Context(), tx); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -257,7 +257,7 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := s.committed(r.Context(), tx); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -311,7 +311,7 @@ func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName
 	if err := emitFieldChanges(ctx, tx, a.OrgID, a.UserID, objectID, id, objectName, sourceAPI, fieldChanges(defs, map[string]any{}, data)); err != nil {
 		return recordView{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := s.committed(ctx, tx); err != nil {
 		return recordView{}, err
 	}
 	return s.selectRecord(ctx, a.OrgID, objectID, id)

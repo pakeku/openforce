@@ -139,7 +139,7 @@ func (s *server) failJob(ctx context.Context, job dueJob, cause error) error {
 	}
 	_, err := s.pool.Exec(ctx, `
 		update jobs
-		set status = $2, attempts = $3, last_error = $4, run_at = $5, updated_at = now()
+		set status = $2, attempts = $3, last_error = $4, run_at = $5, published_at = null, updated_at = now()
 		where id = $1::uuid and status = 'pending'
 	`, job.ID, status, next, trimError(cause), runAt)
 	return err
