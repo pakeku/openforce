@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
+import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
 
 const fields = [{ name: "employees", type: "number" }, { name: "name", type: "text" }]
 const fieldsByObject = {
@@ -23,6 +23,7 @@ test("a record workflow round-trips through the canvas", () => {
   const back = graphToWorkflow(graph.nodes, graph.edges, { object: "company", fields, fieldsByObject })
   assert.deepEqual(back.conditions, workflow.conditions)
   assert.deepEqual(back.actions, workflow.actions)
+  assert.deepEqual(back.else, [])
 })
 
 test("a schedule workflow round-trips without conditions", () => {
@@ -36,6 +37,7 @@ test("a schedule workflow round-trips without conditions", () => {
   const back = graphToWorkflow(graph.nodes, graph.edges, { every: "15m", fields: [], fieldsByObject: {} })
   assert.deepEqual(back.conditions, [])
   assert.deepEqual(back.actions, [{ type: "http", url: "https://example.com/hook" }])
+  assert.deepEqual(back.else, [])
 })
 
 test("a schedule rejects a condition and an update", () => {
@@ -104,6 +106,85 @@ test("a connection can join the tail to a loose step and cannot loop", () => {
   assert.equal(connectionAllowed(withLoose.nodes, withLoose.edges, { source: "action-0", target: "action-extra" }), true)
   assert.equal(connectionAllowed(withLoose.nodes, withLoose.edges, { source: "trigger", target: "action-extra" }), false)
   assert.equal(connectionAllowed(withLoose.nodes, withLoose.edges, { source: "action-0", target: "trigger" }), false)
+})
+
+test("else round-trips behind the conditions", () => {
+  const workflow = {
+    label: "Fork",
+    event: "record.created",
+    object: "company",
+    conditions: [{ field: "employees", op: "gte", value: 3 }],
+    actions: [
+      { type: "update", data: { industry: "Finance" } },
+      { type: "http", url: "https://example.com/match" },
+    ],
+    else: [
+      { type: "create", object: "task", data: { name: "Miss", company: { record: true } } },
+      { type: "delete" },
+    ],
+  }
+  const graph = workflowToGraph(workflow)
+  const back = graphToWorkflow(graph.nodes, graph.edges, { object: "company", fields, fieldsByObject })
+  assert.deepEqual(back.conditions, workflow.conditions)
+  assert.deepEqual(back.actions, workflow.actions)
+  assert.deepEqual(back.else, workflow.else)
+  const elseEdge = graph.edges.find((edge) => edge.sourceHandle === "else")
+  assert.equal(elseEdge.source, "condition-0")
+  assert.ok(graph.nodes.find((node) => node.id === "action-0").position.x < graph.nodes.find((node) => node.id === "else-0").position.x)
+})
+
+test("a condition inserted later still lands before both paths", () => {
+  let graph = workflowToGraph({
+    label: "Fork",
+    conditions: [{ field: "employees", op: "gte", value: 3 }],
+    actions: [{ type: "delete" }],
+  })
+  graph = appendElse(graph.nodes, graph.edges, {
+    id: "else-extra",
+    type: "action",
+    data: { ...actionData("http"), path: "else" },
+  })
+  graph = insertBefore(graph.nodes, graph.edges, {
+    id: "condition-new",
+    type: "condition",
+    data: { field: "name", op: "eq", value: "Acme" },
+  }, "action")
+  const back = graphToWorkflow(graph.nodes, graph.edges, { object: "company", fields, fieldsByObject })
+  assert.deepEqual(back.conditions, [
+    { field: "employees", op: "gte", value: 3 },
+    { field: "name", op: "eq", value: "Acme" },
+  ])
+  assert.deepEqual(back.actions, [{ type: "delete" }])
+  assert.deepEqual(back.else, [{ type: "http", url: "https://example.com/hook" }])
+  assert.equal(graph.edges.find((edge) => edge.sourceHandle === "else").source, "condition-new")
+})
+
+test("removing the condition keeps the other path in front of the trigger", () => {
+  let graph = workflowToGraph({
+    label: "Fork",
+    conditions: [{ field: "name", op: "eq", value: "Acme" }],
+    actions: [{ type: "delete" }],
+    else: [{ type: "http", url: "https://example.com/hook" }],
+  })
+  graph = removeNode(graph.nodes, graph.edges, "condition-0")
+  const back = graphToWorkflow(graph.nodes, graph.edges)
+  assert.deepEqual(back.conditions, [])
+  assert.deepEqual(back.actions, [{ type: "delete" }])
+  assert.deepEqual(back.else, [{ type: "http", url: "https://example.com/hook" }])
+  assert.equal(graph.edges.find((edge) => edge.sourceHandle === "else").source, "trigger")
+})
+
+test("a schedule rejects else", () => {
+  const graph = workflowToGraph({
+    label: "Ping",
+    every: "15m",
+    actions: [{ type: "http", url: "https://example.com/hook" }],
+    else: [{ type: "create", object: "task", data: { name: "Nope" } }],
+  })
+  assert.throws(
+    () => graphToWorkflow(graph.nodes, graph.edges, { every: "15m", fields: [], fieldsByObject: {} }),
+    /a schedule has no else/,
+  )
 })
 
 function actionData(type) {

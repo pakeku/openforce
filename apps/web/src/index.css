@@ -123,6 +123,7 @@ button.text[aria-current="page"] { font-weight: 700; }
   font-size: 0.9rem;
 }
 .flow-node.trigger { border-color: #1d4e89; }
+.flow-node.else { border-color: #9a3412; }
 .flow-kind { color: #667085; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .react-flow__node.selected .flow-node { box-shadow: 0 0 0 2px #1c2430; }
 .executions { list-style: none; padding: 0; margin: 0; }

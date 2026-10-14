@@ -40,6 +40,7 @@ type automationInput struct {
 	Every      string             `json:"every"`
 	Conditions []condition        `json:"conditions"`
 	Actions    []automationAction `json:"actions"`
+	Else       []automationAction `json:"else"`
 }
 
 type automationPlan struct {
@@ -52,6 +53,7 @@ type automationPatch struct {
 	Label      *string             `json:"label"`
 	Conditions *[]condition        `json:"conditions"`
 	Actions    *[]automationAction `json:"actions"`
+	Else       *[]automationAction `json:"else"`
 }
 
 type automationView struct {
@@ -66,12 +68,14 @@ type automationView struct {
 	Version    int                `json:"version"`
 	Conditions []condition        `json:"conditions"`
 	Actions    []automationAction `json:"actions"`
+	Else       []automationAction `json:"else"`
 }
 
 type executionView struct {
 	ID        string    `json:"id"`
 	EventID   string    `json:"event_id"`
 	Status    string    `json:"status"`
+	Path      string    `json:"path,omitempty"`
 	Created   []string  `json:"created"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -133,7 +137,7 @@ func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	conditions, actions, err := encodeAutomation(body.Conditions, body.Actions)
+	conditions, actions, other, err := encodeAutomation(body.Conditions, body.Actions, body.Else)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -141,7 +145,7 @@ func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
 	view := automationView{
 		ID: uuid.NewString(), Name: body.Name, Label: body.Label, Event: body.Event,
 		Object: body.Object, ObjectID: plan.ObjectID, Version: 1,
-		Conditions: body.Conditions, Actions: body.Actions,
+		Conditions: body.Conditions, Actions: body.Actions, Else: body.Else,
 	}
 	var eventName, every, nextAt, actor any
 	if view.Event != "" {
@@ -157,9 +161,9 @@ func (s *server) createAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.pool.Exec(r.Context(), `
 		insert into automation_definitions
-			(id, organization_id, name, label, event_name, object_id, conditions, actions, every_seconds, next_run_at, actor_id)
-		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11)
-	`, view.ID, a.OrgID, view.Name, view.Label, eventName, uuidOrNil(plan.ObjectID), conditions, actions, every, nextAt, actor)
+			(id, organization_id, name, label, event_name, object_id, conditions, actions, else_actions, every_seconds, next_run_at, actor_id)
+		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12)
+	`, view.ID, a.OrgID, view.Name, view.Label, eventName, uuidOrNil(plan.ObjectID), conditions, actions, other, every, nextAt, actor)
 	if isUnique(err) {
 		writeErr(w, apiErr(http.StatusConflict, "automation already exists"))
 		return
@@ -223,7 +227,7 @@ func (s *server) patchAutomation(w http.ResponseWriter, r *http.Request) {
 	}
 	next := automationInput{
 		Name: current.Name, Label: current.Label, Event: current.Event, Object: current.Object,
-		Every: current.Every, Conditions: current.Conditions, Actions: current.Actions,
+		Every: current.Every, Conditions: current.Conditions, Actions: current.Actions, Else: current.Else,
 	}
 	if body.Label != nil {
 		next.Label = *body.Label
@@ -234,22 +238,25 @@ func (s *server) patchAutomation(w http.ResponseWriter, r *http.Request) {
 	if body.Actions != nil {
 		next.Actions = *body.Actions
 	}
+	if body.Else != nil {
+		next.Else = *body.Else
+	}
 	if _, err := s.prepareAutomation(r.Context(), a.OrgID, &next); err != nil {
 		writeErr(w, err)
 		return
 	}
-	conditions, actions, err := encodeAutomation(next.Conditions, next.Actions)
+	conditions, actions, other, err := encodeAutomation(next.Conditions, next.Actions, next.Else)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	if err := tx.QueryRow(r.Context(), `
 		update automation_definitions
-		set label = $1, conditions = $2::jsonb, actions = $3::jsonb,
+		set label = $1, conditions = $2::jsonb, actions = $3::jsonb, else_actions = $4::jsonb,
 			version = version + 1, updated_at = now()
-		where id = $4::uuid and version = $5
+		where id = $5::uuid and version = $6
 		returning version
-	`, next.Label, conditions, actions, current.ID, body.Version).Scan(&current.Version); err != nil {
+	`, next.Label, conditions, actions, other, current.ID, body.Version).Scan(&current.Version); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -260,6 +267,7 @@ func (s *server) patchAutomation(w http.ResponseWriter, r *http.Request) {
 	current.Label = next.Label
 	current.Conditions = next.Conditions
 	current.Actions = next.Actions
+	current.Else = next.Else
 	writeJSON(w, http.StatusOK, current)
 }
 
@@ -292,7 +300,7 @@ func (s *server) listExecutions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.pool.Query(r.Context(), `
-		select id::text, event_id::text, status, created_ids, created_at
+		select id::text, event_id::text, status, path, created_ids, created_at
 		from automation_executions
 		where organization_id = $1::uuid and automation_id = $2::uuid
 		order by created_at, id
@@ -306,10 +314,12 @@ func (s *server) listExecutions(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var view executionView
 		var raw []byte
-		if err := rows.Scan(&view.ID, &view.EventID, &view.Status, &raw, &view.CreatedAt); err != nil {
+		var path sql.NullString
+		if err := rows.Scan(&view.ID, &view.EventID, &view.Status, &path, &raw, &view.CreatedAt); err != nil {
 			writeErr(w, err)
 			return
 		}
+		view.Path = path.String
 		view.Created = []string{}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &view.Created); err != nil {
@@ -343,8 +353,11 @@ func (s *server) prepareAutomation(ctx context.Context, orgID string, body *auto
 	if body.Conditions == nil {
 		body.Conditions = []condition{}
 	}
+	if body.Else == nil {
+		body.Else = []automationAction{}
+	}
 	if every > 0 {
-		if body.Event != "" || body.Object != "" || len(body.Conditions) > 0 {
+		if body.Event != "" || body.Object != "" || len(body.Conditions) > 0 || len(body.Else) > 0 {
 			return automationPlan{}, apiErr(http.StatusBadRequest, "invalid schedule")
 		}
 		if err := s.validateActions(ctx, orgID, "", map[string]fieldDef{}, body.Actions); err != nil {
@@ -380,6 +393,11 @@ func (s *server) prepareAutomation(ctx context.Context, orgID string, body *auto
 	}
 	if err := s.validateActions(ctx, orgID, body.Object, byName, body.Actions); err != nil {
 		return automationPlan{}, err
+	}
+	if len(body.Else) > 0 {
+		if err := s.validateActions(ctx, orgID, body.Object, byName, body.Else); err != nil {
+			return automationPlan{}, err
+		}
 	}
 	return automationPlan{ObjectID: objectID}, nil
 }
@@ -591,26 +609,36 @@ func isRecordRef(value any) bool {
 	return ok && flag
 }
 
-func encodeAutomation(conditions []condition, actions []automationAction) (string, string, error) {
+func encodeAutomation(conditions []condition, actions, elseActions []automationAction) (string, string, string, error) {
 	if conditions == nil {
 		conditions = []condition{}
 	}
+	if actions == nil {
+		actions = []automationAction{}
+	}
+	if elseActions == nil {
+		elseActions = []automationAction{}
+	}
 	rawConditions, err := json.Marshal(conditions)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	rawActions, err := json.Marshal(actions)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return string(rawConditions), string(rawActions), nil
+	rawElse, err := json.Marshal(elseActions)
+	if err != nil {
+		return "", "", "", err
+	}
+	return string(rawConditions), string(rawActions), string(rawElse), nil
 }
 
 func (s *server) selectAutomations(ctx context.Context, orgID, name string) ([]automationView, error) {
 	args := []any{orgID}
 	query := `
 		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
-			d.version, d.conditions, d.actions, d.every_seconds, d.next_run_at
+			d.version, d.conditions, d.actions, d.else_actions, d.every_seconds, d.next_run_at
 		from automation_definitions d
 		left join object_definitions o on o.id = d.object_id
 		where d.organization_id = $1::uuid`
@@ -649,7 +677,7 @@ func (s *server) loadAutomationByName(ctx context.Context, orgID, name string) (
 func lockAutomation(ctx context.Context, tx pgx.Tx, orgID, name string) (automationView, error) {
 	row := tx.QueryRow(ctx, `
 		select d.id::text, d.name, d.label, d.event_name, o.name, d.object_id::text,
-			d.version, d.conditions, d.actions, d.every_seconds, d.next_run_at
+			d.version, d.conditions, d.actions, d.else_actions, d.every_seconds, d.next_run_at
 		from automation_definitions d
 		left join object_definitions o on o.id = d.object_id
 		where d.organization_id = $1::uuid and d.name = $2
@@ -667,8 +695,8 @@ func scanAutomation(row pgx.Row) (automationView, error) {
 	var eventName, objectName, objectID sql.NullString
 	var every sql.NullInt32
 	var next sql.NullTime
-	var conditions, actions []byte
-	if err := row.Scan(&view.ID, &view.Name, &view.Label, &eventName, &objectName, &objectID, &view.Version, &conditions, &actions, &every, &next); err != nil {
+	var conditions, actions, other []byte
+	if err := row.Scan(&view.ID, &view.Name, &view.Label, &eventName, &objectName, &objectID, &view.Version, &conditions, &actions, &other, &every, &next); err != nil {
 		return view, err
 	}
 	view.Event = eventName.String
@@ -683,10 +711,14 @@ func scanAutomation(row pgx.Row) (automationView, error) {
 	}
 	view.Conditions = []condition{}
 	view.Actions = []automationAction{}
+	view.Else = []automationAction{}
 	if err := json.Unmarshal(conditions, &view.Conditions); err != nil {
 		return view, err
 	}
 	if err := json.Unmarshal(actions, &view.Actions); err != nil {
+		return view, err
+	}
+	if err := json.Unmarshal(other, &view.Else); err != nil {
 		return view, err
 	}
 	if view.Conditions == nil {
@@ -694,6 +726,9 @@ func scanAutomation(row pgx.Row) (automationView, error) {
 	}
 	if view.Actions == nil {
 		view.Actions = []automationAction{}
+	}
+	if view.Else == nil {
+		view.Else = []automationAction{}
 	}
 	return view, nil
 }
@@ -778,12 +813,12 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if job.AutomationID == "" {
 		return nil
 	}
-	var conditionsRaw, actionsRaw []byte
+	var conditionsRaw, actionsRaw, elseRaw []byte
 	err := s.pool.QueryRow(ctx, `
-		select conditions, actions
+		select conditions, actions, else_actions
 		from automation_definitions
 		where id = $1::uuid and organization_id = $2::uuid
-	`, job.AutomationID, job.OrgID).Scan(&conditionsRaw, &actionsRaw)
+	`, job.AutomationID, job.OrgID).Scan(&conditionsRaw, &actionsRaw, &elseRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -802,11 +837,14 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 		return err
 	}
 	var conditions []condition
-	var actions []automationAction
+	var actions, elseActions []automationAction
 	if err := json.Unmarshal(conditionsRaw, &conditions); err != nil {
 		return err
 	}
 	if err := json.Unmarshal(actionsRaw, &actions); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(elseRaw, &elseActions); err != nil {
 		return err
 	}
 	event, err := s.loadWebhookEvent(ctx, job.EventID)
@@ -821,8 +859,14 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if err != nil {
 		return err
 	}
+	chosen := actions
+	path := "actions"
 	if !matched {
-		return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "skipped", nil)
+		if len(elseActions) == 0 {
+			return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "skipped", "", nil)
+		}
+		chosen = elseActions
+		path = "else"
 	}
 	actor, err := s.memberActor(ctx, job.OrgID, event.ActorID)
 	if err != nil {
@@ -838,7 +882,7 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if event.ObjectID != nil {
 		sourceObjectID = *event.ObjectID
 	}
-	for _, action := range actions {
+	for _, action := range chosen {
 		id, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
 		if err != nil {
 			return err
@@ -847,7 +891,7 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 			created = append(created, id)
 		}
 	}
-	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", created)
+	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", path, created)
 }
 
 func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, sourceObjectID, recordID string, record map[string]any, action automationAction, cause string) (string, error) {
@@ -1243,7 +1287,7 @@ func asFloat(value any) (float64, bool) {
 	}
 }
 
-func (s *server) recordExecution(ctx context.Context, orgID, automationID, eventID, status string, created []string) error {
+func (s *server) recordExecution(ctx context.Context, orgID, automationID, eventID, status, path string, created []string) error {
 	if created == nil {
 		created = []string{}
 	}
@@ -1251,11 +1295,15 @@ func (s *server) recordExecution(ctx context.Context, orgID, automationID, event
 	if err != nil {
 		return err
 	}
+	var storedPath any
+	if path != "" {
+		storedPath = path
+	}
 	_, err = s.pool.Exec(ctx, `
 		insert into automation_executions
-			(id, organization_id, automation_id, event_id, status, created_ids)
-		values ($1, $2, $3, $4, $5, $6::jsonb)
-	`, uuid.NewString(), orgID, automationID, eventID, status, string(raw))
+			(id, organization_id, automation_id, event_id, status, path, created_ids)
+		values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+	`, uuid.NewString(), orgID, automationID, eventID, status, storedPath, string(raw))
 	if isUnique(err) {
 		return nil
 	}

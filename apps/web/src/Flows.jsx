@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow, applyEdgeChanges, applyNodeChanges } from "@xyflow/react"
 import { api } from "./api.js"
-import { appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
+import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
 
 const events = ["record.created", "record.updated", "record.deleted"]
 const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains"]
@@ -123,9 +123,15 @@ export function Flows({ token }) {
   const onConnect = useCallback((connection) => {
     setEditor((current) => {
       if (!current || !connectionAllowed(current.nodes, current.edges, connection)) return current
+      const handle = connection.sourceHandle || ""
       return {
         ...current,
-        edges: [...current.edges, { id: `${connection.source}-${connection.target}`, source: connection.source, target: connection.target }],
+        edges: [...current.edges, {
+          id: `${connection.source}-${handle}-${connection.target}`,
+          source: connection.source,
+          target: connection.target,
+          ...(handle ? { sourceHandle: handle } : {}),
+        }],
       }
     })
   }, [])
@@ -137,10 +143,13 @@ export function Flows({ token }) {
     const id = `${kind}-${crypto.randomUUID()}`
     const data = kind === "condition"
       ? { field: "", op: "eq", value: "" }
-      : { type: "create", object: editor.object, url: "", recordMode: "", recordField: "", rows: [] }
+      : { type: "create", object: editor.object, url: "", recordMode: "", recordField: "", rows: [], ...(kind === "else" ? { path: "else" } : {}) }
+    const node = { id, type: kind === "condition" ? "condition" : "action", data }
     const graph = kind === "condition"
-      ? insertBefore(editor.nodes, editor.edges, { id, type: kind, data }, "action")
-      : appendNode(editor.nodes, editor.edges, { id, type: kind, data })
+      ? insertBefore(editor.nodes, editor.edges, node, "action")
+      : kind === "else"
+        ? appendElse(editor.nodes, editor.edges, node)
+        : appendNode(editor.nodes, editor.edges, node)
     patchEditor(graph)
     setSelectedId(id)
   }
@@ -178,7 +187,7 @@ export function Flows({ token }) {
     }
     try {
       const source = objects.find((object) => object.name === editor.object)
-      const { conditions, actions } = graphToWorkflow(editor.nodes, editor.edges, {
+      const parsed = graphToWorkflow(editor.nodes, editor.edges, {
         every: editor.mode === "schedule" ? editor.every.trim() : "",
         object: editor.object,
         fields: source?.fields || [],
@@ -188,8 +197,9 @@ export function Flows({ token }) {
         ? await api(token, "PATCH", `/api/automations/${editor.name}`, {
           version: editor.version,
           label,
-          conditions,
-          actions,
+          conditions: parsed.conditions,
+          actions: parsed.actions,
+          else: parsed.else,
         })
         : await api(token, "POST", "/api/automations", {
           name: editor.name.trim(),
@@ -197,8 +207,9 @@ export function Flows({ token }) {
           event: editor.mode === "event" ? editor.event : "",
           object: editor.mode === "event" ? editor.object : "",
           every: editor.mode === "schedule" ? editor.every.trim() : "",
-          conditions,
-          actions,
+          conditions: parsed.conditions,
+          actions: parsed.actions,
+          else: parsed.else,
         })
       const graph = workflowToGraph(saved)
       setSelectedId("trigger")
@@ -289,7 +300,7 @@ export function Flows({ token }) {
           </ReactFlow>
         </div>
         <form className="panel" onSubmit={save}>
-          <p className="empty">Steps run in one chain, from the trigger downward.</p>
+          <p className="empty">Conditions run first. A match follows the actions. A miss follows the other path.</p>
           {selected?.type === "trigger" && (
             <>
               <h2>Trigger</h2>
@@ -344,6 +355,7 @@ export function Flows({ token }) {
           <div className="actions">
             {!schedule && <button type="button" className="secondary" onClick={() => addStep("condition")}>Add condition</button>}
             <button type="button" className="secondary" onClick={() => addStep("action")}>Add action</button>
+            {!schedule && <button type="button" className="secondary" onClick={() => addStep("else")}>Add else</button>}
             <button>Save</button>
           </div>
           {editor.saved && <button type="button" className="secondary" onClick={removeFlow}>Delete flow</button>}
@@ -353,7 +365,7 @@ export function Flows({ token }) {
               {executions.length === 0 && <p className="empty">None yet.</p>}
               <ul className="executions">
                 {executions.map((item) => (
-                  <li key={item.id}><span>{item.status}</span><span className="empty">{item.created_at}</span></li>
+                  <li key={item.id}><span>{item.status}{item.path ? ` · ${item.path}` : ""}</span><span className="empty">{item.created_at}</span></li>
                 ))}
               </ul>
             </>
@@ -400,7 +412,7 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
   }
   return (
     <>
-      <h2>Action</h2>
+      <h2>{data.path === "else" ? "Else" : "Action"}</h2>
       <label>
         Type
         <select value={data.type} onChange={(event) => patch({ type: event.target.value })}>
@@ -468,6 +480,7 @@ function TriggerNode({ data }) {
       <strong>{data.label || "Untitled"}</strong>
       <div>{when}</div>
       <Handle type="source" position={Position.Bottom} />
+      <Handle id="else" type="source" position={Position.Right} />
     </div>
   )
 }
@@ -479,16 +492,18 @@ function ConditionNode({ data }) {
       <div className="flow-kind">Condition</div>
       <strong>{data.field || "Field"} {data.op} {data.value}</strong>
       <Handle type="source" position={Position.Bottom} />
+      <Handle id="else" type="source" position={Position.Right} />
     </div>
   )
 }
 
 function ActionNode({ data }) {
   const detail = data.type === "http" ? data.url || "URL" : data.object || "This record"
+  const other = data.path === "else"
   return (
-    <div className="flow-node action">
+    <div className={other ? "flow-node else" : "flow-node action"}>
       <Handle type="target" position={Position.Top} />
-      <div className="flow-kind">Action</div>
+      <div className="flow-kind">{other ? "Else" : "Action"}</div>
       <strong>{data.type}</strong>
       <div>{detail}</div>
       <Handle type="source" position={Position.Bottom} />
