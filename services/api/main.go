@@ -78,7 +78,7 @@ func runWork() int {
 		return 1
 	}
 	defer pool.Close()
-	n, err := (&server{pool: pool}).deliverAudit(ctx)
+	n, err := (&server{pool: pool}).deliverJobs(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

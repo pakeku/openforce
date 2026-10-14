@@ -18,6 +18,7 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthHandler(pool.Ping))
 	mux.HandleFunc("GET /api/events", s.requireAuth(s.listEvents))
+	mux.HandleFunc("GET /api/jobs", s.requireAuth(s.listJobs))
 	mux.HandleFunc("POST /api/meta/objects", s.requireAuth(s.createObject))
 	mux.HandleFunc("GET /api/meta/objects", s.requireAuth(s.listObjects))
 	mux.HandleFunc("GET /api/meta/objects/{name}", s.requireAuth(s.getObject))

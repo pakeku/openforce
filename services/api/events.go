@@ -71,11 +71,18 @@ func insertEvent(ctx context.Context, tx pgx.Tx, orgID string, ev eventWrite) er
 	if err != nil {
 		return err
 	}
+	eventID := uuid.NewString()
 	_, err = tx.Exec(ctx, `
 		insert into events (id, organization_id, name, actor_id, object_id, record_id, source, payload)
 		values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-	`, uuid.NewString(), orgID, ev.Name, ev.ActorID, uuidOrNil(ev.ObjectID), uuidOrNil(ev.RecordID), ev.Source, string(raw))
-	return err
+	`, eventID, orgID, ev.Name, ev.ActorID, uuidOrNil(ev.ObjectID), uuidOrNil(ev.RecordID), ev.Source, string(raw))
+	if err != nil {
+		return err
+	}
+	if ev.Name == "field.changed" || ev.Name == "record.deleted" {
+		return enqueueJob(ctx, tx, orgID, eventID, "audit")
+	}
+	return nil
 }
 
 func uuidOrNil(id string) any {
