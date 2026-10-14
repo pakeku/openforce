@@ -6,6 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +22,7 @@ func main() {
 		case "seed":
 			os.Exit(runSeed(os.Args[2:]))
 		case "work":
-			os.Exit(runWork())
+			os.Exit(runWork(os.Args[2:]))
 		default:
 			fmt.Fprintln(os.Stderr, "usage: api [migrate|seed|work]")
 			os.Exit(2)
@@ -70,7 +73,24 @@ func openPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
-func runWork() int {
+func runWork(args []string) int {
+	once := false
+	for _, arg := range args {
+		if arg != "-once" {
+			fmt.Fprintln(os.Stderr, "usage: api work [-once]")
+			return 2
+		}
+		once = true
+	}
+	if once {
+		return workSession(context.Background(), true)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return workSession(ctx, false)
+}
+
+func workSession(stop context.Context, once bool) int {
 	ctx := context.Background()
 	pool, err := openPool(ctx, databaseURL())
 	if err != nil {
@@ -87,26 +107,69 @@ func runWork() int {
 		defer client.Close()
 	}
 	s := &server{pool: pool, redis: client}
+	if once {
+		n, err := s.drainJobs(ctx, -1)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("delivered %d\n", n)
+		return 0
+	}
+	return keepWorking(stop, s)
+}
+
+// drainJobs is one pass: schedules, then publish, then the stream, then Postgres.
+// block is the stream read timeout. Negative skips the wait. It must not be 0.
+func (s *server) drainJobs(ctx context.Context, block time.Duration) (int, error) {
 	if _, err := s.enqueueDueSchedules(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 0, err
 	}
 	if err := s.publishDueJobs(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 0, err
 	}
-	queued, err := s.consumeQueuedJobs(ctx)
+	queued, err := s.consumeQueuedJobs(ctx, block)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 0, err
 	}
 	polled, err := s.deliverJobs(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 0, err
 	}
-	fmt.Printf("delivered %d\n", queued+polled)
-	return 0
+	return queued + polled, nil
+}
+
+func keepWorking(stop context.Context, s *server) int {
+	// Redis waits inside the stream read. Without it, only an idle pass waits.
+	block := time.Duration(-1)
+	if s.redis != nil {
+		block = time.Second
+	}
+	for {
+		if stop.Err() != nil {
+			return 0
+		}
+		n, err := s.drainJobs(context.Background(), block)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if n > 0 {
+			fmt.Printf("delivered %d\n", n)
+		}
+		if stop.Err() != nil {
+			return 0
+		}
+		if s.redis == nil && n == 0 {
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-stop.Done():
+				timer.Stop()
+				return 0
+			case <-timer.C:
+			}
+		}
+	}
 }
 
 func runServer() int {

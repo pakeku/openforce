@@ -102,7 +102,7 @@ Webhooks
 
 **Goal.** Every meaningful mutation produces a reliable event.
 
-Event persistence, jobs, audit, outbound webhooks, and a Redis wake-up stream are in `services/api`. A committed change writes the event in that same transaction, then publishes due jobs to Redis. `work` reads that stream, completes audit jobs and signed webhook deliveries, and records a dead letter after repeated failure. The job row stays in Postgres. Inbound webhooks are still ahead.
+Event persistence, jobs, audit, outbound webhooks, and a Redis wake-up stream are in `services/api`. A committed change writes the event in that same transaction, then publishes due jobs to Redis. `work` repeats the drain until SIGINT or SIGTERM, completes audit jobs and signed webhook deliveries, and records a dead letter after repeated failure. The job row stays in Postgres. Inbound webhooks are still ahead.
 
 ## Phase 4. Automation
 

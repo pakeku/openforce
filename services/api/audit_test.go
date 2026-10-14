@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -139,6 +141,113 @@ func TestWorkCommandDeliversAudit(t *testing.T) {
 	}
 }
 
+func TestWorkLoopDeliversAndReturns(t *testing.T) {
+	token := newOwner(t, "WorkLoop", "work-loop@example.com")
+	postObject(t, token, companyObject())
+	t.Setenv("DATABASE_URL", testURL)
+	t.Setenv("REDIS_URL", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	out := &lockedBuf{}
+	copyDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(out, r)
+		close(copyDone)
+	}()
+	codeCh := make(chan int, 1)
+	go func() {
+		codeCh <- workSession(ctx, false)
+	}()
+
+	var recordID string
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-codeCh:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		os.Stdout = old
+		_ = w.Close()
+		<-copyDone
+		if recordID == "" {
+			return
+		}
+		_, _ = testPool.Exec(context.Background(), `
+			update jobs j
+			set status = 'done', updated_at = now()
+			from events e
+			where j.event_id = e.id
+			  and e.record_id = $1::uuid
+			  and j.status = 'pending'
+			  and j.run_at <= now()
+		`, recordID)
+	})
+
+	acme := postRecord(t, token, "company", map[string]any{"name": "Resident", "employees": 2, "industry": "SaaS"})
+	recordID = acme.ID
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		entries := listAudit(t, token, acme.ID)
+		if len(entries) == 3 && entries[0].After == "Resident" && deliveredCount(out.String()) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("not delivered\n%s", out.String())
+		}
+		select {
+		case code := <-codeCh:
+			joined = true
+			t.Fatalf("loop returned %d before delivery\n%s", code, out.String())
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	select {
+	case code := <-codeCh:
+		joined = true
+		if code != 0 {
+			t.Fatalf("work loop %d\n%s", code, out.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("work loop did not return")
+	}
+
+	var due int
+	if err := testPool.QueryRow(context.Background(), `
+		select count(*)
+		from jobs j
+		join events e on e.id = j.event_id
+		where e.record_id = $1::uuid and j.status = 'pending' and j.run_at <= now()
+	`, acme.ID).Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due != 0 {
+		t.Fatalf("left %d due jobs", due)
+	}
+}
+
+func deliveredCount(out string) int {
+	best := 0
+	for _, line := range strings.Split(out, "\n") {
+		var n int
+		if _, err := fmt.Sscanf(line, "delivered %d", &n); err == nil && n > best {
+			best = n
+		}
+	}
+	return best
+}
+
 func listAudit(t *testing.T, token, id string) []auditView {
 	t.Helper()
 	rec := apiDo(t, http.MethodGet, "/api/objects/company/"+id+"/audit", token, nil)
@@ -161,7 +270,7 @@ func runWorkCaptured(t *testing.T) (int, string) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	code := runWork()
+	code := runWork([]string{"-once"})
 	w.Close()
 	os.Stdout = old
 	var buf bytes.Buffer

@@ -67,7 +67,7 @@ func TestRedisWakesTheWorker(t *testing.T) {
 	}
 
 	worker := &server{pool: testPool, redis: client}
-	n, err := worker.consumeQueuedJobs(context.Background())
+	n, err := worker.consumeQueuedJobs(context.Background(), -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestRedisWakesTheWorker(t *testing.T) {
 			t.Fatalf("job %s status %s", id, status)
 		}
 	}
-	again, err := worker.consumeQueuedJobs(context.Background())
+	again, err := worker.consumeQueuedJobs(context.Background(), -1)
 	if err != nil || again != 0 {
 		t.Fatalf("second consume %d %v", again, err)
 	}

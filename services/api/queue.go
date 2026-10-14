@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -117,11 +118,15 @@ func (s *server) unpublishJob(ctx context.Context, id string) error {
 	return err
 }
 
-// consumeQueuedJobs reads new stream messages once and does not wait.
+// consumeQueuedJobs reads new stream messages.
+// A negative block returns without waiting. Zero waits forever, so callers must not pass it.
 // Postgres remains the record of status, attempts, and dead letters.
-func (s *server) consumeQueuedJobs(ctx context.Context) (int, error) {
+func (s *server) consumeQueuedJobs(ctx context.Context, block time.Duration) (int, error) {
 	if s.redis == nil {
 		return 0, nil
+	}
+	if block == 0 {
+		return 0, fmt.Errorf("redis block must not be 0")
 	}
 	if err := ensureJobGroup(ctx, s.redis); err != nil {
 		return 0, err
@@ -134,7 +139,7 @@ func (s *server) consumeQueuedJobs(ctx context.Context) (int, error) {
 			Streams:  []string{jobStream, ">"},
 			Count:    100,
 			// A negative block omits BLOCK. Zero sends BLOCK 0, which waits forever.
-			Block: -1,
+			Block: block,
 		}).Result()
 		if errors.Is(err, redis.Nil) {
 			return delivered, nil
