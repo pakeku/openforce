@@ -144,6 +144,17 @@ The request does not write the audit log or call a webhook. A field change or a 
 
 `POST /api/automations` takes a name, a label, an event (`record.created`, `record.updated`, or `record.deleted`), an object, conditions, and actions. Conditions use the same operators as a list filter and are combined with and. Actions are `create`, `update`, `delete`, and `http`. A value `{"field":"name"}` copies a field from the triggering record, and `{"record":true}` copies that record's id. An `http` action POSTs JSON to a URL. With `data` set, that object is the body after those references are filled in. Without `data`, the body carries the event name, the object, the record id, and the record. A response outside 2xx fails the job. A workflow can run on a schedule instead of a record event. `every` is at least one minute, written as `15m`, `1h`, or `1d`. `work` stores a `schedule.tick` event and runs that workflow when the time arrives, then sets the next run. A schedule can create a record or POST JSON. Update and delete stay on record events, because a schedule has no triggering record. `update` and `delete` change the triggering record unless `record` points at another one. The record request stores an automation job in the same transaction as the event. `work` checks the conditions and runs the actions as the user who caused the event. A miss is an execution with status `skipped`. A finished run is `done`. The policy check still applies to each write. A workflow does not enqueue itself for the write its own action just committed.
 
+## CLI
+
+The `openforce` command in `cli` talks to the API over HTTP. `pull` writes `objects/<name>.json` for every object from `GET /api/meta/objects`. Each file has `name`, `label`, and `fields` (`name`, `type`, `required`, and `options` when the type is `enum`). `push` creates a missing object with `POST /api/meta/objects`. An object whose file matches the live definition is left unchanged. An object that differs exits non-zero and the message names that object. Objects that are not in the directory are not deleted.
+
+```text
+go run -C cli . pull -url http://localhost:8080 -token <token> -dir <project>
+go run -C cli . push -url http://localhost:8080 -token <token> -dir <project>
+```
+
+A missing `-url`, `-token`, or `-dir` exits 2 and names the flag. An API error is printed and the process exits 1.
+
 ## Work with records
 
 The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page. The Flows screen draws a workflow with [React Flow](https://reactflow.dev/learn) and saves that chain through the automation API.
