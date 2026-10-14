@@ -118,6 +118,8 @@ func (s *server) runJob(ctx context.Context, job dueJob) error {
 		return s.deliverWebhook(ctx, job)
 	case "automation":
 		return s.runAutomation(ctx, job)
+	case "connector":
+		return s.runConnector(ctx, job)
 	default:
 		return fmt.Errorf("unknown job kind %s", job.Kind)
 	}

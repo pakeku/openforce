@@ -31,6 +31,7 @@ var eventNames = map[string]struct{}{
 	"workflow.started":   {},
 	"workflow.completed": {},
 	"schedule.tick":      {},
+	"sync.requested":     {},
 }
 
 type eventWrite struct {
