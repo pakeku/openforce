@@ -24,6 +24,10 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("GET /api/webhooks", s.requireAuth(s.listWebhooks))
 	mux.HandleFunc("POST /api/webhooks", s.requireAuth(s.createWebhook))
 	mux.HandleFunc("DELETE /api/webhooks/{id}", s.requireAuth(s.deleteWebhook))
+	mux.HandleFunc("GET /api/inbound", s.requireAuth(s.listInbound))
+	mux.HandleFunc("POST /api/inbound", s.requireAuth(s.createInbound))
+	mux.HandleFunc("DELETE /api/inbound/{name}", s.requireAuth(s.deleteInbound))
+	mux.HandleFunc("POST /api/hooks/{id}", s.acceptInbound)
 	mux.HandleFunc("GET /api/automations", s.requireAuth(s.listAutomations))
 	mux.HandleFunc("POST /api/automations", s.requireAuth(s.createAutomation))
 	mux.HandleFunc("GET /api/automations/{name}", s.requireAuth(s.getAutomation))
@@ -62,7 +66,7 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Openforce-Signature")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

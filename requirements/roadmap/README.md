@@ -139,6 +139,8 @@ Rate limiting
 
 **Goal.** External systems become another source and sink of events and records.
 
+An owner can register an inbound endpoint for an object. `POST /api/hooks/{id}` with `X-Openforce-Signature` creates a record as that owner, with source `Integration`, and a workflow on `record.created` sees it. Credentials and connectors are still ahead.
+
 ## Phase 6. Developer platform
 
 [Developer experience](../developer-platform/developer-experience/README.md), [environments](../developer-platform/environments/README.md), [functions](../developer-platform/functions/README.md), plus API keys, service accounts, SDKs, and OpenAPI on the [public API](../integrations/webhooks/README.md).

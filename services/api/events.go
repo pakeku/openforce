@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	sourceAPI        = "API"
-	sourceAdmin      = "Admin"
-	sourceAutomation = "Automation"
+	sourceAPI         = "API"
+	sourceAdmin       = "Admin"
+	sourceAutomation  = "Automation"
+	sourceIntegration = "Integration"
 )
 
 var eventNames = map[string]struct{}{
