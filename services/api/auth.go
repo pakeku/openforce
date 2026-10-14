@@ -112,6 +112,14 @@ func (s *server) bootstrap(ctx context.Context, orgName, userName, email, role s
 	`, uuid.NewString(), orgID, userID, hash); err != nil {
 		return "", "", err
 	}
+	if err = insertEvent(ctx, tx, orgID, eventWrite{
+		Name:    "user.created",
+		ActorID: userID,
+		Source:  sourceAdmin,
+		Payload: map[string]any{"user_id": userID, "email": strings.ToLower(email), "name": userName},
+	}); err != nil {
+		return "", "", err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return "", "", err
 	}
@@ -129,6 +137,15 @@ func (s *server) addMember(ctx context.Context, orgID, userName, email string) (
 		return "", err
 	}
 	defer tx.Rollback(ctx)
+	var actorID string
+	if err = tx.QueryRow(ctx, `
+		select user_id::text from memberships
+		where organization_id = $1::uuid and role = 'owner'
+		order by user_id
+		limit 1
+	`, orgID).Scan(&actorID); err != nil {
+		return "", err
+	}
 	if _, err = tx.Exec(ctx, `insert into users (id, email, name) values ($1, $2, $3)`, userID, strings.ToLower(email), userName); err != nil {
 		return "", err
 	}
@@ -139,6 +156,14 @@ func (s *server) addMember(ctx context.Context, orgID, userName, email string) (
 		insert into access_tokens (id, organization_id, user_id, token_hash)
 		values ($1, $2, $3, $4)
 	`, uuid.NewString(), orgID, userID, hash); err != nil {
+		return "", err
+	}
+	if err = insertEvent(ctx, tx, orgID, eventWrite{
+		Name:    "user.created",
+		ActorID: actorID,
+		Source:  sourceAdmin,
+		Payload: map[string]any{"user_id": userID, "email": strings.ToLower(email), "name": userName},
+	}); err != nil {
 		return "", err
 	}
 	if err = tx.Commit(ctx); err != nil {

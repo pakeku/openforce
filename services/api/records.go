@@ -54,7 +54,7 @@ func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	view, err := s.insertRecord(r.Context(), a.OrgID, objectID, data)
+	view, err := s.insertRecord(r.Context(), a, objectID, r.PathValue("name"), defs, data)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -149,6 +149,10 @@ func (s *server) patchRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr(http.StatusConflict, "stale version"))
 		return
 	}
+	before := map[string]any{}
+	for key, value := range current.Data {
+		before[key] = value
+	}
 	for key, value := range body.Data {
 		current.Data[key] = value
 	}
@@ -180,6 +184,26 @@ func (s *server) patchRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	objectName := r.PathValue("name")
+	if err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
+		Name:     "record.updated",
+		ActorID:  a.UserID,
+		ObjectID: objectID,
+		RecordID: current.ID,
+		Source:   sourceAPI,
+		Payload: map[string]any{
+			"object":  objectName,
+			"version": version,
+			"data":    current.Data,
+		},
+	}); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := emitFieldChanges(r.Context(), tx, a.OrgID, a.UserID, objectID, current.ID, objectName, sourceAPI, fieldChanges(defs, before, body.Data)); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeErr(w, err)
 		return
@@ -203,7 +227,13 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr(http.StatusNotFound, "not found"))
 		return
 	}
-	tag, err := s.pool.Exec(r.Context(), `
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	tag, err := tx.Exec(r.Context(), `
 		update records
 		set deleted_at = now(), updated_at = now()
 		where id = $1::uuid and organization_id = $2::uuid and object_id = $3::uuid and deleted_at is null
@@ -214,6 +244,21 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	if tag.RowsAffected() == 0 {
 		writeErr(w, apiErr(http.StatusNotFound, "not found"))
+		return
+	}
+	if err := insertEvent(r.Context(), tx, a.OrgID, eventWrite{
+		Name:     "record.deleted",
+		ActorID:  a.UserID,
+		ObjectID: objectID,
+		RecordID: r.PathValue("id"),
+		Source:   sourceAPI,
+		Payload:  map[string]any{"object": r.PathValue("name")},
+	}); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -231,20 +276,45 @@ func (s *server) readRecord(r *http.Request, write bool) (recordView, error) {
 	return s.selectRecord(r.Context(), a.OrgID, objectID, r.PathValue("id"))
 }
 
-func (s *server) insertRecord(ctx context.Context, orgID, objectID string, data map[string]any) (recordView, error) {
+func (s *server) insertRecord(ctx context.Context, a actor, objectID, objectName string, defs []fieldDef, data map[string]any) (recordView, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return recordView{}, err
 	}
-	id := uuid.NewString()
-	_, err = s.pool.Exec(ctx, `
-		insert into records (id, organization_id, object_id, data)
-		values ($1, $2, $3, $4::jsonb)
-	`, id, orgID, objectID, string(raw))
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return recordView{}, err
 	}
-	return s.selectRecord(ctx, orgID, objectID, id)
+	defer tx.Rollback(ctx)
+	id := uuid.NewString()
+	_, err = tx.Exec(ctx, `
+		insert into records (id, organization_id, object_id, data)
+		values ($1, $2, $3, $4::jsonb)
+	`, id, a.OrgID, objectID, string(raw))
+	if err != nil {
+		return recordView{}, err
+	}
+	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+		Name:     "record.created",
+		ActorID:  a.UserID,
+		ObjectID: objectID,
+		RecordID: id,
+		Source:   sourceAPI,
+		Payload: map[string]any{
+			"object":  objectName,
+			"version": 1,
+			"data":    data,
+		},
+	}); err != nil {
+		return recordView{}, err
+	}
+	if err := emitFieldChanges(ctx, tx, a.OrgID, a.UserID, objectID, id, objectName, sourceAPI, fieldChanges(defs, map[string]any{}, data)); err != nil {
+		return recordView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return recordView{}, err
+	}
+	return s.selectRecord(ctx, a.OrgID, objectID, id)
 }
 
 func (s *server) selectRecord(ctx context.Context, orgID, objectID, id string) (recordView, error) {

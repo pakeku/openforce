@@ -64,7 +64,7 @@ func (s *server) createObject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	view, err := s.insertObject(r.Context(), a.OrgID, body)
+	view, err := s.insertObject(r.Context(), a, body)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -136,7 +136,7 @@ func validateObjectBody(body objectBody) error {
 	return nil
 }
 
-func (s *server) insertObject(ctx context.Context, orgID string, body objectBody) (objectView, error) {
+func (s *server) insertObject(ctx context.Context, a actor, body objectBody) (objectView, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return objectView{}, err
@@ -147,7 +147,7 @@ func (s *server) insertObject(ctx context.Context, orgID string, body objectBody
 	_, err = tx.Exec(ctx, `
 		insert into object_definitions (id, organization_id, name, label)
 		values ($1, $2, $3, $4)
-	`, objectID, orgID, body.Name, body.Label)
+	`, objectID, a.OrgID, body.Name, body.Label)
 	if err != nil {
 		if isUnique(err) {
 			return objectView{}, apiErr(http.StatusConflict, "object already exists")
@@ -155,17 +155,26 @@ func (s *server) insertObject(ctx context.Context, orgID string, body objectBody
 		return objectView{}, err
 	}
 	for i, field := range body.Fields {
-		if err := insertField(ctx, tx, orgID, objectID, field.Name, field.Type, field.Required, field.Options, i); err != nil {
+		if err := insertField(ctx, tx, a.OrgID, objectID, field.Name, field.Type, field.Required, field.Options, i); err != nil {
 			return objectView{}, err
 		}
 	}
-	if err := insertDefaultCatalog(ctx, tx, orgID, objectID); err != nil {
+	if err := insertDefaultCatalog(ctx, tx, a.OrgID, objectID); err != nil {
+		return objectView{}, err
+	}
+	if err := insertEvent(ctx, tx, a.OrgID, eventWrite{
+		Name:     "object.created",
+		ActorID:  a.UserID,
+		ObjectID: objectID,
+		Source:   sourceAPI,
+		Payload:  map[string]any{"name": body.Name, "label": body.Label},
+	}); err != nil {
 		return objectView{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return objectView{}, err
 	}
-	views, err := s.loadObjects(ctx, orgID, body.Name)
+	views, err := s.loadObjects(ctx, a.OrgID, body.Name)
 	if err != nil {
 		return objectView{}, err
 	}

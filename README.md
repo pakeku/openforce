@@ -52,7 +52,7 @@ An Account is an object. A pipeline is a view. Lead routing is a workflow. A CRM
 
 ## Status
 
-Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Events, jobs, and automation come in later phases.
+Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/openforce/issues/1) is the plan: one repo, a Go API, Postgres, and shared tables. The service defines objects, stores JSONB records, isolates them by organization, links them, and checks object-level permissions before it reads or writes a record. Deletes set `deleted_at`, and updates carry a version so two writers cannot silently overwrite each other. Phase 2 adds list filters, saved views, layouts, record pages, and the React runtime in `apps/web`. Phase 3 stores an event for each committed change to a user, an object, or a record, and lists those events for the caller's organization. Jobs and automation come in later phases.
 
 ## Run the kernel
 
@@ -92,10 +92,13 @@ The tests start an embedded Postgres, so Docker is not required to run them.
 | `DELETE /api/objects/{name}/{id}` | Sets `deleted_at`. Later reads omit the row. The row stays in Postgres. |
 | `GET /api/objects/{name}/{id}/related/{relationship}` | Records on the other side of a relationship. |
 | `POST /api/objects/{name}/{id}/related/{relationship}` | Links a many-to-many record. Body is `{"id":"..."}`. |
+| `GET /api/events` | Events for the caller's organization, oldest first. |
 
 Field types on an object are `text`, `number`, `currency`, `date`, `boolean`, and `enum`. A `belongs_to` relationship adds a `relation` field. `formula` is not accepted in this phase. The organization owner can read and write every object. A member needs a grant.
 
 A list accepts repeatable `filter` and `sort` parameters, such as `filter=industry:eq:SaaS&sort=employees:desc`. Operators are `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, and `contains`. Creating an object also creates an All view, a Record layout, and list and record pages. Those are edited at `/api/meta/objects/{name}/views`, `/layouts`, and `/pages`. A view named in `?view=` supplies columns, filters, and sort. A patch of a view, layout, or page sends the current version and gets the next one back.
+
+A committed change also writes an event in that same transaction. Record creates, updates, and deletes emit `record.created`, `record.updated`, and `record.deleted`. A field that actually changes also emits `field.changed` with the previous value and the new one. Creating an object emits `object.created`, and creating a user emits `user.created`. `GET /api/events` accepts `name`, `record`, `after` (a sequence number), and `limit`. Record and field events are visible to the owner and to a member who can read that object. The other catalog names are visible to every member of the organization.
 
 ## Work with records
 

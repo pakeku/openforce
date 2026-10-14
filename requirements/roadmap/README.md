@@ -102,6 +102,8 @@ Webhooks
 
 **Goal.** Every meaningful mutation produces a reliable event.
 
+Event persistence has started in `services/api`. A committed change to a user, an object, or a record writes the event in that same transaction, and `GET /api/events` reads the caller's organization. Jobs, workers, audit, and webhooks are still ahead.
+
 ## Phase 4. Automation
 
 [Automation](../runtime/automation/README.md).
