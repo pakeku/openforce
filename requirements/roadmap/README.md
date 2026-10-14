@@ -159,7 +159,7 @@ OpenAPI
 
 **Goal.** A developer can build an entire business application on the platform without editing Openforce's core source.
 
-An owner can issue an API key for a service account. The token is returned once, and record access follows the grants on that key. OpenAPI, a CLI, and functions are still ahead.
+An owner can issue an API key for a service account. The token is returned once, and record access follows the grants on that key. `GET /api/openapi.json` returns OpenAPI 3.0.3 for the record API the caller can read, and a CLI and functions are still ahead.
 
 ## After the six phases
 

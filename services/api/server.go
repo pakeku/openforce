@@ -68,6 +68,7 @@ func newMux(pool *pgxpool.Pool) http.Handler {
 	mux.HandleFunc("POST /api/meta/objects/{name}/pages", s.requireUser(s.createPage))
 	mux.HandleFunc("GET /api/meta/objects/{name}/pages/{page}", s.requireUser(s.getPage))
 	mux.HandleFunc("PATCH /api/meta/objects/{name}/pages/{page}", s.requireUser(s.patchPage))
+	mux.HandleFunc("GET /api/openapi.json", s.requireAuth(s.openAPI))
 	mux.HandleFunc("GET /api/objects/{name}", s.requireAuth(s.listRecords))
 	mux.HandleFunc("POST /api/objects/{name}", s.requireAuth(s.createRecord))
 	mux.HandleFunc("GET /api/objects/{name}/{id}", s.requireAuth(s.getRecord))
