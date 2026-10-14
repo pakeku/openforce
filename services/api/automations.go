@@ -31,6 +31,9 @@ type automationAction struct {
 	Record any            `json:"record,omitempty"`
 	Data   map[string]any `json:"data,omitempty"`
 	URL    string         `json:"url,omitempty"`
+	User   string         `json:"user,omitempty"`
+	Title  any            `json:"title,omitempty"`
+	Body   any            `json:"body,omitempty"`
 }
 
 type automationInput struct {
@@ -485,6 +488,11 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 				return err
 			}
 			continue
+		case "notification":
+			if err := s.validateNotificationAction(ctx, orgID, sourceName, source, action); err != nil {
+				return err
+			}
+			continue
 		case "create", "update", "delete":
 			if sourceName == "" && action.Type != "create" {
 				return apiErr(http.StatusBadRequest, "invalid action")
@@ -888,12 +896,24 @@ func (s *server) runAutomation(ctx context.Context, job dueJob) error {
 	if event.ObjectID != nil {
 		sourceObjectID = *event.ObjectID
 	}
+	notes := []notificationWrite{}
 	for _, action := range chosen {
+		if action.Type == "notification" {
+			note, err := s.prepareNotification(ctx, actor.OrgID, recordID, data, action)
+			if err != nil {
+				return err
+			}
+			notes = append(notes, note)
+			continue
+		}
 		ids, err := s.runAction(ctx, actor, event.Name, sourceName, sourceObjectID, recordID, data, action, job.AutomationID)
 		if err != nil {
 			return err
 		}
 		created = append(created, ids...)
+	}
+	if len(notes) > 0 {
+		return s.commitNotifications(ctx, job.OrgID, job.AutomationID, job.EventID, path, created, notes)
 	}
 	return s.recordExecution(ctx, job.OrgID, job.AutomationID, job.EventID, "done", path, created)
 }
