@@ -183,6 +183,13 @@ func setup(args []string, in io.Reader, stdout, stderr io.Writer, start string, 
 		fmt.Fprintln(stderr, err.Error())
 		return 1
 	}
+	workStop, err := env.start(apiDir, dbEnv, "go", "run", ".", "work")
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 1
+	}
+	stops = append(stops, workStop)
+	fmt.Fprintln(stdout, "Worker running")
 	webDir := filepath.Join(root, "apps", "web")
 	webStop, err := env.start(webDir, []string{"VITE_API_URL=" + apiURL}, "npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", strconv.Itoa(cfg.Web), "--strictPort")
 	if err != nil {

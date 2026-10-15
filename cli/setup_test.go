@@ -27,6 +27,18 @@ func TestSetupFlagsMigrateSeedAndStart(t *testing.T) {
 		},
 		start: func(dir string, extra []string, name string, args ...string) (func(), error) {
 			calls = append(calls, name+" "+strings.Join(args, " "))
+			joined := strings.Join(extra, " ")
+			if strings.Contains(joined, "REDIS_URL") {
+				t.Fatalf("env %v", extra)
+			}
+			if strings.Join(args, " ") == "run . work" {
+				if dir != filepath.Join(root, "services", "api") {
+					t.Fatalf("worker dir %s", dir)
+				}
+				if len(extra) != 1 || !strings.HasPrefix(extra[0], "DATABASE_URL=postgres://openforce:openforce@127.0.0.1:5432/openforce") || strings.Contains(extra[0], "PORT") {
+					t.Fatalf("worker env %v", extra)
+				}
+			}
 			return func() {}, nil
 		},
 		wait: func(url string) error { return nil },
@@ -43,11 +55,12 @@ func TestSetupFlagsMigrateSeedAndStart(t *testing.T) {
 		"go run . migrate",
 		"go run . seed -org Acme -email ada@example.com -name Ada -password longpassword",
 		"go run .",
+		"go run . work",
 		"npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
 	}, "\n") {
 		t.Fatalf("calls %v", calls)
 	}
-	if !strings.Contains(stdout.String(), "API http://127.0.0.1:8080\n") || !strings.Contains(stdout.String(), "Sign in as ada@example.com\n") {
+	if !strings.Contains(stdout.String(), "Worker running\n") || !strings.Contains(stdout.String(), "API http://127.0.0.1:8080\n") || !strings.Contains(stdout.String(), "Web http://127.0.0.1:5173\n") || !strings.Contains(stdout.String(), "Sign in as ada@example.com\n") {
 		t.Fatalf("stdout %q", stdout.String())
 	}
 	raw, err := os.ReadFile(filepath.Join(root, ".openforce", "dev.json"))
@@ -73,15 +86,15 @@ func TestSetupReuseSkipsSeed(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d %s", code, stderr.String())
 	}
-	for _, call := range calls {
-		if strings.Contains(call, "seed") {
-			t.Fatalf("seeded on reuse: %v", calls)
-		}
+	joined := strings.Join(calls, "\n")
+	if strings.Contains(joined, "seed") || !strings.Contains(joined, "go run . work") {
+		t.Fatalf("calls %v", calls)
 	}
 }
 
 func TestSetupExistingOwnerContinues(t *testing.T) {
 	root := fakeRepo(t)
+	var calls []string
 	env := &setupEnv{
 		startDB: func(string) (string, func(), error) {
 			return "postgres://openforce:openforce@127.0.0.1:1/openforce?sslmode=disable", func() {}, nil
@@ -92,8 +105,11 @@ func TestSetupExistingOwnerContinues(t *testing.T) {
 			}
 			return nil
 		},
-		start: func(string, []string, string, ...string) (func(), error) { return func() {}, nil },
-		wait:  func(string) error { return nil },
+		start: func(dir string, extra []string, name string, args ...string) (func(), error) {
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			return func() {}, nil
+		},
+		wait: func(string) error { return nil },
 	}
 	done := make(chan struct{})
 	close(done)
@@ -102,8 +118,8 @@ func TestSetupExistingOwnerContinues(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d %s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "owner already exists, continuing") {
-		t.Fatalf("stderr %q", stderr.String())
+	if !strings.Contains(stderr.String(), "owner already exists, continuing") || !strings.Contains(strings.Join(calls, "\n"), "go run . work") {
+		t.Fatalf("stderr %q calls %v", stderr.String(), calls)
 	}
 }
 

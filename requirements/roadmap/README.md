@@ -159,7 +159,7 @@ OpenAPI
 
 **Goal.** A developer can build an entire business application on the platform without editing Openforce's core source.
 
-An owner can issue an API key for a service account. The token is returned once, and record access follows the grants on that key. `GET /api/openapi.json` returns OpenAPI 3.0.3 for the record API the caller can read. `openforce pull` and `openforce push` copy object definitions as JSON files. `openforce setup` starts a local database, the API, and the web app from a few answers. A workflow can run a named Go function the worker already contains, and Python and a sandbox stay deferred.
+An owner can issue an API key for a service account. The token is returned once, and record access follows the grants on that key. `GET /api/openapi.json` returns OpenAPI 3.0.3 for the record API the caller can read. `openforce pull` and `openforce push` copy object definitions as JSON files. `openforce setup` starts a local database, the API, and the web app from a few answers. `openforce setup` starts the worker with the API and the web app. A workflow can run a named Go function the worker already contains, and Python and a sandbox stay deferred.
 
 ## After the six phases
 

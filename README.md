@@ -56,13 +56,13 @@ Phase 1 is the kernel in `services/api`. [Issue 1](https://github.com/pakeku/ope
 
 ## Run the kernel
 
-From the repository, `openforce setup` asks for an organization, owner, and password, starts a local Postgres, applies migrations, seeds that owner, and starts the API and the web app. The answers, except the password, are saved in `.openforce/dev.json`. The next run can reuse them and skip seeding.
+From the repository, `openforce setup` asks for an organization, owner, and password, starts a local Postgres, applies migrations, seeds that owner, and starts the API, the worker, and the web app. The answers, except the password, are saved in `.openforce/dev.json`. The next run can reuse them and skip seeding.
 
 ```text
 go run -C cli . setup
 ```
 
-Press Ctrl+C to stop the API, the web app, and the local database. Pass `-database postgres://...` to use a Postgres you already run, including `docker compose up -d`. `-reuse` starts again from the saved file.
+Press Ctrl+C to stop the worker, the API, the web app, and the local database. Pass `-database postgres://...` to use a Postgres you already run, including `docker compose up -d`. `-reuse` starts again from the saved file.
 
 The same steps by hand:
 
