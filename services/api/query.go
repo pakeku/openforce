@@ -42,7 +42,7 @@ func (s *server) resolveList(r *http.Request, orgID, objectID string, defs []fie
 			return q, err
 		}
 		q.Columns = view.Columns
-		if view.Kind == "kanban" {
+		if view.Kind == "kanban" || view.Kind == "calendar" {
 			q.Columns = appendGroupColumn(view.Columns, view.Group)
 		}
 		for _, filter := range view.Filters {

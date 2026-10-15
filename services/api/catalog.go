@@ -333,12 +333,17 @@ func prepareView(body *viewBody, defs []fieldDef) error {
 	switch body.Kind {
 	case "table":
 		if body.Group != "" {
-			return apiErr(http.StatusBadRequest, "group is only valid for kanban")
+			return apiErr(http.StatusBadRequest, "group is only valid for kanban or calendar")
 		}
 	case "kanban":
 		def, ok := byName[body.Group]
 		if !ok || def.Type != "enum" {
 			return apiErr(http.StatusBadRequest, "group must be an enum")
+		}
+	case "calendar":
+		def, ok := byName[body.Group]
+		if !ok || def.Type != "date" {
+			return apiErr(http.StatusBadRequest, "group must be a date")
 		}
 	default:
 		return apiErr(http.StatusBadRequest, "invalid view")

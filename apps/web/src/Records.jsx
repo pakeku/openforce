@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "./api.js"
 import { boardColumns, boardMove, cardColumn, cardTitle, cardsInColumn, viewNameOk } from "./board.js"
+import { calendarMove, cardsOnDay, monthLabel, monthWeeks, recordDay, shiftMonth, unscheduledCards, weekdays } from "./calendar.js"
 import { dedupeRelationships, isChildList, isLinkList, safeReturnPath } from "./relate.js"
 import { objectFieldsPath, objectRecordPath, objectTablePath } from "./routes.js"
 import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
@@ -24,6 +25,7 @@ export function TablePage({ token, object }) {
   const [boardName, setBoardName] = useState("")
   const [boardLabel, setBoardLabel] = useState("")
   const [boardGroup, setBoardGroup] = useState("")
+  const [viewKind, setViewKind] = useState("kanban")
 
   if (scope !== object) {
     setScope(object)
@@ -36,6 +38,7 @@ export function TablePage({ token, object }) {
     setBoardName("")
     setBoardLabel("")
     setBoardGroup("")
+    setViewKind("kanban")
     setError("")
   }
 
@@ -51,7 +54,7 @@ export function TablePage({ token, object }) {
       const name = chosen?.name || "all"
       const params = new URLSearchParams(query)
       params.set("view", name)
-      if (chosen?.kind === "kanban") params.set("limit", "200")
+      if (chosen?.kind === "kanban" || chosen?.kind === "calendar") params.set("limit", "200")
       const body = await api(token, "GET", `/api/objects/${object}?${params}`)
       if (!live) return
       setError("")
@@ -80,10 +83,12 @@ export function TablePage({ token, object }) {
 
   const current = views.find((item) => item.name === viewName)
   const enums = fields.filter((item) => item.type === "enum")
-  const groupValue = boardGroup || enums[0]?.name || ""
+  const dates = fields.filter((item) => item.type === "date")
+  const groupFields = viewKind === "calendar" ? dates : enums
+  const groupValue = groupFields.some((item) => item.name === boardGroup) ? boardGroup : (groupFields[0]?.name || "")
   const groupField = fields.find((item) => item.name === current?.group)
 
-  async function createBoard(event) {
+  async function createView(event) {
     event.preventDefault()
     setError("")
     const name = boardName.trim()
@@ -95,7 +100,7 @@ export function TablePage({ token, object }) {
       await api(token, "POST", `/api/meta/objects/${object}/views`, {
         name,
         label: boardLabel.trim(),
-        kind: "kanban",
+        kind: viewKind,
         group: groupValue,
         columns: ["*"],
       })
@@ -108,19 +113,30 @@ export function TablePage({ token, object }) {
     }
   }
 
-  async function moveCard(record, column) {
-    if (!current?.group) return
-    if (cardColumn(record, current.group, groupField?.options || []) === column) return
+  async function moveRecord(record, payload, same) {
+    if (!current?.group || same) return
     setError("")
     try {
       await api(token, "PATCH", `/api/objects/${object}/${record.id}`, {
         version: record.version,
-        data: boardMove(current.group, column),
+        data: payload,
       })
       setRefresh((item) => item + 1)
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  function moveCard(record, column) {
+    moveRecord(
+      record,
+      boardMove(current?.group, column),
+      cardColumn(record, current?.group, groupField?.options || []) === column,
+    )
+  }
+
+  function moveDay(record, day) {
+    moveRecord(record, calendarMove(current?.group, day), recordDay(record, current?.group) === day)
   }
 
   return (
@@ -147,16 +163,26 @@ export function TablePage({ token, object }) {
         <input className="form-control of-filter" value={value} onChange={(event) => setValue(event.target.value)} aria-label="Filter value" />
         <Button>Filter</Button>
       </form>
-      {ready && enums.length === 0 ? (
-        <Notice>Add an enum field to group a board.</Notice>
+      {ready && enums.length === 0 && dates.length === 0 ? (
+        <Notice>Add an enum field to group a board, or a date field to group a calendar.</Notice>
       ) : ready ? (
-        <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={createBoard}>
-          <input className="form-control of-filter" value={boardName} onChange={(event) => setBoardName(event.target.value)} aria-label="Board name" placeholder="pipeline" required />
-          <input className="form-control of-filter" value={boardLabel} onChange={(event) => setBoardLabel(event.target.value)} aria-label="Board label" placeholder="Pipeline" required />
-          <select className="form-select of-filter" value={groupValue} aria-label="Group field" onChange={(event) => setBoardGroup(event.target.value)}>
-            {enums.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+        <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={createView}>
+          <select className="form-select of-filter" value={viewKind} aria-label="View kind" onChange={(event) => setViewKind(event.target.value)}>
+            <option value="kanban">Board</option>
+            <option value="calendar">Calendar</option>
           </select>
-          <Button>Add board</Button>
+          {groupFields.length === 0 ? (
+            <Notice>{viewKind === "calendar" ? "Add a date field to group a calendar." : "Add an enum field to group a board."}</Notice>
+          ) : (
+            <>
+              <input className="form-control of-filter" value={boardName} onChange={(event) => setBoardName(event.target.value)} aria-label="View name" placeholder={viewKind === "calendar" ? "renewals" : "pipeline"} required />
+              <input className="form-control of-filter" value={boardLabel} onChange={(event) => setBoardLabel(event.target.value)} aria-label="View label" placeholder={viewKind === "calendar" ? "Renewals" : "Pipeline"} required />
+              <select className="form-select of-filter" value={groupValue} aria-label="Group field" onChange={(event) => setBoardGroup(event.target.value)}>
+                {groupFields.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+              </select>
+              <Button>{viewKind === "calendar" ? "Add calendar" : "Add board"}</Button>
+            </>
+          )}
         </form>
       ) : null}
       {current?.kind === "kanban" ? (
@@ -166,6 +192,13 @@ export function TablePage({ token, object }) {
           records={records}
           onOpen={(id) => navigate(objectRecordPath(object, id))}
           onMove={moveCard}
+        />
+      ) : current?.kind === "calendar" ? (
+        <Month
+          group={current.group}
+          records={records}
+          onOpen={(id) => navigate(objectRecordPath(object, id))}
+          onMove={moveDay}
         />
       ) : (
         <div className="table-responsive card">
@@ -231,6 +264,78 @@ function Board({ group, options, records, onOpen, onMove }) {
         </section>
       ))}
     </div>
+  )
+}
+
+function Month({ group, records, onOpen, onMove }) {
+  const now = new Date()
+  const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 })
+  const weeks = monthWeeks(cursor.year, cursor.month)
+  const loose = unscheduledCards(records, group)
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+
+  function dropOn(event, day) {
+    event.preventDefault()
+    const id = event.dataTransfer.getData("text/plain")
+    const record = records.find((item) => item.id === id)
+    if (record) onMove(record, day)
+  }
+
+  return (
+    <div className="of-calendar">
+      <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
+        <Button type="button" variant="secondary" onClick={() => setCursor((item) => shiftMonth(item.year, item.month, -1))}>Previous</Button>
+        <strong>{monthLabel(cursor.year, cursor.month)}</strong>
+        <Button type="button" variant="secondary" onClick={() => setCursor((item) => shiftMonth(item.year, item.month, 1))}>Next</Button>
+      </div>
+      {loose.length > 0 && (
+        <section className="of-unscheduled mb-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => dropOn(event, "")}>
+          <h2 className="h6">Unscheduled</h2>
+          <div className="d-flex flex-wrap gap-2">
+            {loose.map((record) => (
+              <CalendarCard key={record.id} record={record} group={group} onOpen={onOpen} onMove={onMove} />
+            ))}
+          </div>
+        </section>
+      )}
+      <div className="of-month">
+        {weekdays.map((day) => <div key={day} className="of-weekday">{day}</div>)}
+        {weeks.flat().map((day) => (
+          <section
+            key={day.date}
+            className={`of-day${day.inMonth ? "" : " outside"}${day.date === today ? " today" : ""}`}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => dropOn(event, day.date)}
+          >
+            <div className="of-day-label">{Number(day.date.slice(8))}</div>
+            {cardsOnDay(records, group, day.date).map((record) => (
+              <CalendarCard key={record.id} record={record} group={group} onOpen={onOpen} onMove={onMove} />
+            ))}
+          </section>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function CalendarCard({ record, group, onOpen, onMove }) {
+  return (
+    <article
+      className="card of-card"
+      draggable
+      onDragStart={(event) => event.dataTransfer.setData("text/plain", record.id)}
+    >
+      <button type="button" className="btn btn-link p-0" onClick={() => onOpen(record.id)}>
+        {cardTitle(record)}
+      </button>
+      <input
+        className="form-control form-control-sm mt-2"
+        type="date"
+        aria-label={`Move ${cardTitle(record)}`}
+        value={recordDay(record, group)}
+        onChange={(event) => onMove(record, event.target.value)}
+      />
+    </article>
   )
 }
 

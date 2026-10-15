@@ -85,7 +85,7 @@ Record pages
 
 **Goal.** Create a new object without writing React.
 
-Record pages, forms, tables, filters, and sorting are the Phase 2 page builder. Dashboards, portals, and custom components use the same page model and follow once record pages work. A view is a table or a kanban grouped by an enum field. The record list renders that board, and moving a card updates the field.
+Record pages, forms, tables, filters, and sorting are the Phase 2 page builder. Dashboards, portals, and custom components use the same page model and follow once record pages work. A view is a table, a kanban grouped by an enum field, or a calendar grouped by a date field. The record list renders the board or the month, and moving a card updates the field.
 
 ## Phase 3. Events
 
