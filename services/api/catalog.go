@@ -14,6 +14,7 @@ type storedView struct {
 	Name     string       `json:"name"`
 	Label    string       `json:"label"`
 	Kind     string       `json:"kind"`
+	Group    string       `json:"group,omitempty"`
 	Columns  []string     `json:"columns"`
 	Filters  []filterBody `json:"filters"`
 	Sort     []sortBody   `json:"sort"`
@@ -42,6 +43,8 @@ type storedPage struct {
 type viewBody struct {
 	Name    string       `json:"name"`
 	Label   string       `json:"label"`
+	Kind    string       `json:"kind"`
+	Group   string       `json:"group"`
 	Columns []string     `json:"columns"`
 	Filters []filterBody `json:"filters"`
 	Sort    []sortBody   `json:"sort"`
@@ -50,6 +53,8 @@ type viewBody struct {
 type viewPatch struct {
 	Version int           `json:"version"`
 	Label   *string       `json:"label"`
+	Kind    *string       `json:"kind"`
+	Group   *string       `json:"group"`
 	Columns *[]string     `json:"columns"`
 	Filters *[]filterBody `json:"filters"`
 	Sort    *[]sortBody   `json:"sort"`
@@ -193,9 +198,9 @@ func (s *server) createView(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.pool.Exec(r.Context(), `
 		insert into view_definitions
-			(id, organization_id, object_id, name, label, kind, columns, filters, sort)
-		values ($1, $2, $3, $4, $5, 'table', $6::jsonb, $7::jsonb, $8::jsonb)
-	`, uuid.NewString(), a.OrgID, objectID, body.Name, body.Label, columns, filters, sorts)
+			(id, organization_id, object_id, name, label, kind, group_field, columns, filters, sort)
+		values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+	`, uuid.NewString(), a.OrgID, objectID, body.Name, body.Label, body.Kind, emptyAsNil(body.Group), columns, filters, sorts)
 	if err != nil {
 		if isUnique(err) {
 			writeErr(w, apiErr(http.StatusConflict, "view already exists"))
@@ -251,9 +256,18 @@ func (s *server) patchView(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, apiErr(http.StatusConflict, "stale version"))
 		return
 	}
-	next := viewBody{Name: current.Name, Label: current.Label, Columns: current.Columns, Filters: current.Filters, Sort: current.Sort}
+	next := viewBody{
+		Name: current.Name, Label: current.Label, Kind: current.Kind, Group: current.Group,
+		Columns: current.Columns, Filters: current.Filters, Sort: current.Sort,
+	}
 	if body.Label != nil {
 		next.Label = *body.Label
+	}
+	if body.Kind != nil {
+		next.Kind = *body.Kind
+	}
+	if body.Group != nil {
+		next.Group = *body.Group
 	}
 	if body.Columns != nil {
 		next.Columns = *body.Columns
@@ -275,11 +289,11 @@ func (s *server) patchView(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := tx.QueryRow(r.Context(), `
 		update view_definitions
-		set label = $1, columns = $2::jsonb, filters = $3::jsonb, sort = $4::jsonb,
+		set label = $1, kind = $2, group_field = $3, columns = $4::jsonb, filters = $5::jsonb, sort = $6::jsonb,
 			version = version + 1, updated_at = now()
-		where id = $5 and version = $6
+		where id = $7 and version = $8
 		returning version
-	`, next.Label, columns, filters, sorts, current.ID, body.Version).Scan(&current.Version); err != nil {
+	`, next.Label, next.Kind, emptyAsNil(next.Group), columns, filters, sorts, current.ID, body.Version).Scan(&current.Version); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -288,6 +302,8 @@ func (s *server) patchView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current.Label = next.Label
+	current.Kind = next.Kind
+	current.Group = next.Group
 	current.Columns = next.Columns
 	current.Filters = next.Filters
 	current.Sort = next.Sort
@@ -310,7 +326,23 @@ func prepareView(body *viewBody, defs []fieldDef) error {
 	if body.Sort == nil {
 		body.Sort = []sortBody{}
 	}
+	if body.Kind == "" {
+		body.Kind = "table"
+	}
 	byName := indexFields(defs)
+	switch body.Kind {
+	case "table":
+		if body.Group != "" {
+			return apiErr(http.StatusBadRequest, "group is only valid for kanban")
+		}
+	case "kanban":
+		def, ok := byName[body.Group]
+		if !ok || def.Type != "enum" {
+			return apiErr(http.StatusBadRequest, "group must be an enum")
+		}
+	default:
+		return apiErr(http.StatusBadRequest, "invalid view")
+	}
 	for _, column := range body.Columns {
 		if column == "*" {
 			continue
@@ -350,7 +382,7 @@ func (s *server) loadView(ctx context.Context, orgID, objectID, name string) (st
 
 func (s *server) loadViews(ctx context.Context, orgID, objectID, name string) ([]storedView, error) {
 	query := `
-		select id::text, name, label, kind, columns, filters, sort, version
+		select id::text, name, label, kind, group_field, columns, filters, sort, version
 		from view_definitions
 		where organization_id = $1 and object_id = $2`
 	args := []any{orgID, objectID}
@@ -382,8 +414,12 @@ func (s *server) loadViews(ctx context.Context, orgID, objectID, name string) ([
 func scanView(row pgx.Row) (storedView, error) {
 	var view storedView
 	var columns, filters, sorts []byte
-	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Kind, &columns, &filters, &sorts, &view.Version); err != nil {
+	var group *string
+	if err := row.Scan(&view.ID, &view.Name, &view.Label, &view.Kind, &group, &columns, &filters, &sorts, &view.Version); err != nil {
 		return view, err
+	}
+	if group != nil {
+		view.Group = *group
 	}
 	if err := json.Unmarshal(columns, &view.Columns); err != nil {
 		return view, err
@@ -411,7 +447,7 @@ func (view storedView) present(defs []fieldDef) storedView {
 
 func lockView(ctx context.Context, tx pgx.Tx, orgID, objectID, name string) (storedView, error) {
 	row := tx.QueryRow(ctx, `
-		select id::text, name, label, kind, columns, filters, sort, version
+		select id::text, name, label, kind, group_field, columns, filters, sort, version
 		from view_definitions
 		where organization_id = $1 and object_id = $2 and name = $3
 		for update

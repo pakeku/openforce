@@ -42,6 +42,9 @@ func (s *server) resolveList(r *http.Request, orgID, objectID string, defs []fie
 			return q, err
 		}
 		q.Columns = view.Columns
+		if view.Kind == "kanban" {
+			q.Columns = appendGroupColumn(view.Columns, view.Group)
+		}
 		for _, filter := range view.Filters {
 			if err := q.addFilter(byName, filter.Field, filter.Operator, filter.Value); err != nil {
 				return q, err
@@ -296,6 +299,20 @@ func (q listQuery) sql() (string, []any) {
 	args = append(args, q.Limit)
 	fmt.Fprintf(&b, " limit $%d", len(args))
 	return b.String(), args
+}
+
+func appendGroupColumn(columns []string, group string) []string {
+	if group == "" || hasStar(columns) {
+		return columns
+	}
+	for _, column := range columns {
+		if column == group {
+			return columns
+		}
+	}
+	copied := make([]string, len(columns), len(columns)+1)
+	copy(copied, columns)
+	return append(copied, group)
 }
 
 func projectRecords(records []recordView, columns []string) []recordView {

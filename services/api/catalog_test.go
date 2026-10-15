@@ -357,3 +357,160 @@ func requireExactForbidden(t *testing.T, rec *httptest.ResponseRecorder) {
 		t.Fatalf("body %s", rec.Body.String())
 	}
 }
+
+func TestKanbanView(t *testing.T) {
+	token := newOwner(t, "Kanban", "kanban@example.com")
+	orgID := orgOf(t, token)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `delete from jobs where organization_id = $1::uuid`, orgID)
+	})
+	postObject(t, token, companyObject())
+
+	rec := apiDo(t, http.MethodGet, "/api/meta/objects/company/views/all", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	var all storedView
+	mustJSON(t, rec, &all)
+	if all.Kind != "table" || all.Group != "" {
+		t.Fatalf("default view %#v", all)
+	}
+
+	rejected := []struct {
+		body map[string]any
+		err  string
+	}{
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "calendar", "group": "industry"}, "invalid view"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "table", "group": "industry"}, "group is only valid for kanban"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban", "group": "name"}, "group must be an enum"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban"}, "group must be an enum"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban", "group": "missing"}, "group must be an enum"},
+	}
+	for _, item := range rejected {
+		rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", token, item.body)
+		requireStatus(t, rec, http.StatusBadRequest)
+		if errorOf(t, rec) != item.err {
+			t.Fatalf("body %s", rec.Body.String())
+		}
+	}
+
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", token, map[string]any{
+		"name": "plain", "label": "Plain",
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	var plain storedView
+	mustJSON(t, rec, &plain)
+	if plain.Kind != "table" || plain.Group != "" {
+		t.Fatalf("defaulted kind %#v", plain)
+	}
+
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", token, map[string]any{
+		"name":    "pipeline",
+		"label":   "Pipeline",
+		"kind":    "kanban",
+		"group":   "industry",
+		"columns": []string{"name"},
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	var board storedView
+	mustJSON(t, rec, &board)
+	if board.Kind != "kanban" || board.Group != "industry" || len(board.Columns) != 1 || board.Columns[0] != "name" {
+		t.Fatalf("board %#v", board)
+	}
+
+	acme := postRecord(t, token, "company", map[string]any{"name": "Acme", "employees": 10, "industry": "SaaS"})
+	postRecord(t, token, "company", map[string]any{"name": "Beta", "employees": 2, "industry": "Finance"})
+	listed := listRecords(t, token, "company", "view=pipeline&limit=200")
+	var found recordView
+	for _, record := range listed {
+		if record.Data["name"] == "Acme" {
+			found = record
+		}
+		if _, ok := record.Data["employees"]; ok {
+			t.Fatalf("hidden column %#v", record.Data)
+		}
+	}
+	if found.Data["industry"] != "SaaS" {
+		t.Fatalf("group column %#v", listed)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/objects/company/"+acme.ID, token, map[string]any{
+		"version": acme.Version,
+		"data":    map[string]any{"industry": "Finance"},
+	})
+	requireStatus(t, rec, http.StatusOK)
+	moved := getRecord(t, token, "company", acme.ID)
+	if moved.Data["industry"] != "Finance" || moved.Version != acme.Version+1 {
+		t.Fatalf("moved %#v", moved)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/pipeline", token, map[string]any{
+		"version": board.Version,
+		"label":   "Industries",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &board)
+	if board.Version != 2 || board.Label != "Industries" || board.Kind != "kanban" || board.Group != "industry" {
+		t.Fatalf("label patch %#v", board)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/pipeline", token, map[string]any{
+		"version": board.Version,
+		"kind":    "table",
+	})
+	requireStatus(t, rec, http.StatusBadRequest)
+	if errorOf(t, rec) != "group is only valid for kanban" {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/fields", token, map[string]any{
+		"name": "stage", "type": "enum", "options": []string{"Open", "Won"},
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/pipeline", token, map[string]any{
+		"version": board.Version,
+		"group":   "stage",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &board)
+	if board.Kind != "kanban" || board.Group != "stage" || board.Version != 3 {
+		t.Fatalf("regroup %#v", board)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/pipeline", token, map[string]any{
+		"version": board.Version,
+		"kind":    "table",
+		"group":   "",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	var cleared storedView
+	mustJSON(t, rec, &cleared)
+	if cleared.Kind != "table" || cleared.Group != "" {
+		t.Fatalf("back to table %#v", cleared)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/views/pipeline", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &cleared)
+	if cleared.Kind != "table" || cleared.Group != "" {
+		t.Fatalf("stored table %#v", cleared)
+	}
+
+	member, err := (&server{pool: testPool}).addMember(context.Background(), orgID, "Mia", "kanban-member@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", member, map[string]any{
+		"name": "memberboard", "label": "Member", "kind": "kanban", "group": "industry",
+	})
+	requireExactForbidden(t, rec)
+
+	rec = apiDo(t, http.MethodPost, "/api/keys", token, map[string]any{
+		"name": "boardkey", "label": "Board key",
+		"grants": []any{map[string]any{"object": "company", "can_read": true, "can_write": true}},
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	var key apiKeyView
+	mustJSON(t, rec, &key)
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", key.Token, map[string]any{
+		"name": "keyboard", "label": "Key", "kind": "kanban", "group": "industry",
+	})
+	requireExactForbidden(t, rec)
+}

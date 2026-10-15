@@ -1,38 +1,126 @@
 import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "./api.js"
+import { boardColumns, boardMove, cardColumn, cardTitle, cardsInColumn, viewNameOk } from "./board.js"
 import { dedupeRelationships, isChildList, isLinkList, safeReturnPath } from "./relate.js"
 import { objectFieldsPath, objectRecordPath, objectTablePath } from "./routes.js"
 import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
 
 export function TablePage({ token, object }) {
   const navigate = useNavigate()
+  const [scope, setScope] = useState(object)
+  const [views, setViews] = useState([])
+  const [viewName, setViewName] = useState("all")
+  const [fields, setFields] = useState([])
   const [columns, setColumns] = useState([])
   const [records, setRecords] = useState([])
   const [error, setError] = useState("")
   const [field, setField] = useState("name")
   const [operator, setOperator] = useState("contains")
   const [value, setValue] = useState("")
+  const [query, setQuery] = useState("")
+  const [refresh, setRefresh] = useState(0)
+  const [ready, setReady] = useState(false)
+  const [boardName, setBoardName] = useState("")
+  const [boardLabel, setBoardLabel] = useState("")
+  const [boardGroup, setBoardGroup] = useState("")
 
-  async function load(query) {
-    const view = await api(token, "GET", `/api/meta/objects/${object}/views/all`)
-    const path = query
-      ? `/api/objects/${object}?view=all&${query}`
-      : `/api/objects/${object}?view=all`
-    const body = await api(token, "GET", path)
-    setColumns(view.resolved)
-    setRecords(body.records)
+  if (scope !== object) {
+    setScope(object)
+    setViewName("all")
+    setQuery("")
+    setFields([])
+    setViews([])
+    setRecords([])
+    setReady(false)
+    setBoardName("")
+    setBoardLabel("")
+    setBoardGroup("")
+    setError("")
   }
 
   useEffect(() => {
-    load("").catch((err) => setError(err.message))
-  }, [token, object])
+    let live = true
+    async function load() {
+      const [definition, listed] = await Promise.all([
+        api(token, "GET", `/api/meta/objects/${object}`),
+        api(token, "GET", `/api/meta/objects/${object}/views`),
+      ])
+      const available = listed.views || []
+      const chosen = available.find((item) => item.name === viewName) || available.find((item) => item.name === "all") || available[0]
+      const name = chosen?.name || "all"
+      const params = new URLSearchParams(query)
+      params.set("view", name)
+      if (chosen?.kind === "kanban") params.set("limit", "200")
+      const body = await api(token, "GET", `/api/objects/${object}?${params}`)
+      if (!live) return
+      setError("")
+      setFields(definition.fields || [])
+      setViews(available)
+      setColumns(chosen?.resolved || [])
+      setRecords(body.records || [])
+      setReady(true)
+      if (name !== viewName) setViewName(name)
+    }
+    load().catch((err) => { if (live) setError(err.message) })
+    return () => { live = false }
+  }, [token, object, viewName, query, refresh])
 
   function applyFilter(event) {
     event.preventDefault()
     setError("")
-    const query = value === "" ? "" : `filter=${encodeURIComponent(`${field}:${operator}:${value}`)}`
-    load(query).catch((err) => setError(err.message))
+    if (value === "") {
+      setQuery("")
+      return
+    }
+    const params = new URLSearchParams()
+    params.append("filter", `${field}:${operator}:${value}`)
+    setQuery(params.toString())
+  }
+
+  const current = views.find((item) => item.name === viewName)
+  const enums = fields.filter((item) => item.type === "enum")
+  const groupValue = boardGroup || enums[0]?.name || ""
+  const groupField = fields.find((item) => item.name === current?.group)
+
+  async function createBoard(event) {
+    event.preventDefault()
+    setError("")
+    const name = boardName.trim()
+    if (!viewNameOk(name)) {
+      setError("invalid name")
+      return
+    }
+    try {
+      await api(token, "POST", `/api/meta/objects/${object}/views`, {
+        name,
+        label: boardLabel.trim(),
+        kind: "kanban",
+        group: groupValue,
+        columns: ["*"],
+      })
+      setBoardName("")
+      setBoardLabel("")
+      setViewName(name)
+      setRefresh((item) => item + 1)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function moveCard(record, column) {
+    if (!current?.group) return
+    if (cardColumn(record, current.group, groupField?.options || []) === column) return
+    setError("")
+    try {
+      await api(token, "PATCH", `/api/objects/${object}/${record.id}`, {
+        version: record.version,
+        data: boardMove(current.group, column),
+      })
+      setRefresh((item) => item + 1)
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   return (
@@ -47,6 +135,9 @@ export function TablePage({ token, object }) {
     >
       <Notice tone="error">{error}</Notice>
       <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={applyFilter}>
+        <select className="form-select of-filter" value={viewName} aria-label="View" onChange={(event) => setViewName(event.target.value)}>
+          {views.map((item) => <option key={item.name} value={item.name}>{item.label}</option>)}
+        </select>
         <input className="form-control of-filter" value={field} onChange={(event) => setField(event.target.value)} aria-label="Filter field" />
         <select className="form-select of-filter" value={operator} onChange={(event) => setOperator(event.target.value)} aria-label="Filter operator">
           <option value="contains">contains</option>
@@ -56,22 +147,90 @@ export function TablePage({ token, object }) {
         <input className="form-control of-filter" value={value} onChange={(event) => setValue(event.target.value)} aria-label="Filter value" />
         <Button>Filter</Button>
       </form>
-      <div className="table-responsive card">
-        <table className="table table-hover mb-0">
-          <thead>
-            <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
-          </thead>
-          <tbody>
-            {records.map((record) => (
-              <tr key={record.id} onClick={() => navigate(objectRecordPath(object, record.id))}>
-                {columns.map((column) => <td key={column}>{show(record.data[column])}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {ready && enums.length === 0 ? (
+        <Notice>Add an enum field to group a board.</Notice>
+      ) : ready ? (
+        <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={createBoard}>
+          <input className="form-control of-filter" value={boardName} onChange={(event) => setBoardName(event.target.value)} aria-label="Board name" placeholder="pipeline" required />
+          <input className="form-control of-filter" value={boardLabel} onChange={(event) => setBoardLabel(event.target.value)} aria-label="Board label" placeholder="Pipeline" required />
+          <select className="form-select of-filter" value={groupValue} aria-label="Group field" onChange={(event) => setBoardGroup(event.target.value)}>
+            {enums.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+          </select>
+          <Button>Add board</Button>
+        </form>
+      ) : null}
+      {current?.kind === "kanban" ? (
+        <Board
+          group={current.group}
+          options={groupField?.options || []}
+          records={records}
+          onOpen={(id) => navigate(objectRecordPath(object, id))}
+          onMove={moveCard}
+        />
+      ) : (
+        <div className="table-responsive card">
+          <table className="table table-hover mb-0">
+            <thead>
+              <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
+            </thead>
+            <tbody>
+              {records.map((record) => (
+                <tr key={record.id} onClick={() => navigate(objectRecordPath(object, record.id))}>
+                  {columns.map((column) => <td key={column}>{show(record.data[column])}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <Notice>{records.length === 0 ? "No records." : ""}</Notice>
     </Page>
+  )
+}
+
+function Board({ group, options, records, onOpen, onMove }) {
+  const lanes = boardColumns(options, records, group)
+  function dropOn(event, column) {
+    event.preventDefault()
+    const id = event.dataTransfer.getData("text/plain")
+    const record = records.find((item) => item.id === id)
+    if (record) onMove(record, column)
+  }
+  return (
+    <div className="of-board">
+      {lanes.map((lane) => (
+        <section
+          key={lane.key || "none"}
+          className="of-lane"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => dropOn(event, lane.key)}
+        >
+          <h2 className="h6">{lane.label}</h2>
+          {cardsInColumn(records, group, lane.key, options).map((record) => (
+            <article
+              key={record.id}
+              className="card of-card"
+              draggable
+              onDragStart={(event) => event.dataTransfer.setData("text/plain", record.id)}
+            >
+              <button type="button" className="btn btn-link p-0" onClick={() => onOpen(record.id)}>
+                {cardTitle(record)}
+              </button>
+              <select
+                className="form-select form-select-sm mt-2"
+                aria-label={`Move ${cardTitle(record)}`}
+                value={cardColumn(record, group, options)}
+                onChange={(event) => onMove(record, event.target.value)}
+              >
+                {lanes.map((option) => (
+                  <option key={option.key || "none"} value={option.key}>{option.label}</option>
+                ))}
+              </select>
+            </article>
+          ))}
+        </section>
+      ))}
+    </div>
   )
 }
 
