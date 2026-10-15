@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "./api.js"
+import { dedupeRelationships, isChildList, isLinkList, safeReturnPath } from "./relate.js"
 import { objectRecordPath, objectTablePath } from "./routes.js"
 import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
 
@@ -68,6 +69,8 @@ export function TablePage({ token, object }) {
 
 export function RecordPage({ token, object, id }) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const search = searchParams.toString()
   const [fields, setFields] = useState([])
   const [layout, setLayout] = useState([])
   const [relationships, setRelationships] = useState([])
@@ -76,6 +79,7 @@ export function RecordPage({ token, object, id }) {
   const [version, setVersion] = useState(0)
   const [entries, setEntries] = useState([])
   const [error, setError] = useState("")
+  const [refresh, setRefresh] = useState(0)
 
   useEffect(() => {
     let live = true
@@ -86,11 +90,18 @@ export function RecordPage({ token, object, id }) {
         api(token, "GET", `/api/meta/objects/${object}/relationships`),
       ])
       if (!live) return
+      const unique = dedupeRelationships(links.relationships)
       setFields(definition.fields)
       setLayout(form.resolved)
-      setRelationships(links.relationships)
+      setRelationships(unique)
       if (!id) {
-        setData({})
+        const params = new URLSearchParams(search)
+        const seeded = {}
+        for (const field of definition.fields) {
+          const value = params.get(field.name)
+          if (value) seeded[field.name] = value
+        }
+        setData(seeded)
         setVersion(0)
         setRelated([])
         setEntries([])
@@ -98,9 +109,9 @@ export function RecordPage({ token, object, id }) {
       }
       const [record, groups, audit] = await Promise.all([
         api(token, "GET", `/api/objects/${object}/${id}`),
-        Promise.all(links.relationships.map(async (link) => {
+        Promise.all(unique.map(async (link) => {
           const body = await api(token, "GET", `/api/objects/${object}/${id}/related/${link.name}`)
-          return { ...link, records: body.records }
+          return { ...link, records: body.records || [] }
         })),
         api(token, "GET", `/api/objects/${object}/${id}/audit`),
       ])
@@ -112,7 +123,7 @@ export function RecordPage({ token, object, id }) {
     }
     load().catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
-  }, [token, object, id])
+  }, [token, object, id, search, refresh])
 
   const byName = Object.fromEntries(fields.map((field) => [field.name, field]))
 
@@ -131,7 +142,8 @@ export function RecordPage({ token, object, id }) {
       const saved = id
         ? await api(token, "PATCH", `/api/objects/${object}/${id}`, { version, data: payload })
         : await api(token, "POST", `/api/objects/${object}`, payload)
-      navigate(objectRecordPath(object, saved.id))
+      const back = safeReturnPath(new URLSearchParams(search).get("back"))
+      navigate(id || !back ? objectRecordPath(object, saved.id) : back)
       setVersion(saved.version)
       setData(saved.data)
     } catch (err) {
@@ -182,17 +194,15 @@ export function RecordPage({ token, object, id }) {
         </Actions>
       </Panel>
       {related.map((group) => (
-        <Panel key={group.name} title={group.name}>
-          <List>
-            {group.records.map((record) => (
-              <ListButton key={record.id} onClick={() => navigate(objectRecordPath(group.to, record.id))}>
-                <strong>{record.data.name || record.id}</strong>
-                <Meta>{group.to}</Meta>
-              </ListButton>
-            ))}
-          </List>
-          <Notice>{group.records.length === 0 ? "None yet." : ""}</Notice>
-        </Panel>
+        <RelatedPanel
+          key={group.name}
+          token={token}
+          object={object}
+          id={id}
+          group={group}
+          fields={fields}
+          onLinked={() => setRefresh((value) => value + 1)}
+        />
       ))}
       {id && (
         <Panel title="Activity">
@@ -214,6 +224,60 @@ export function RecordPage({ token, object, id }) {
         </Panel>
       )}
     </Page>
+  )
+}
+
+function RelatedPanel({ token, object, id, group, fields, onLinked }) {
+  const navigate = useNavigate()
+  const [draft, setDraft] = useState("")
+  const [error, setError] = useState("")
+  const child = isChildList(group, fields)
+  const link = isLinkList(group)
+
+  async function linkRecord(event) {
+    event.preventDefault()
+    setError("")
+    try {
+      await api(token, "POST", `/api/objects/${object}/${id}/related/${group.name}`, { id: draft.trim() })
+      setDraft("")
+      onLinked()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  return (
+    <Panel title={group.name}>
+      <Notice tone="error">{error}</Notice>
+      {child && (
+        <div className="mb-3">
+          <Button
+            type="button"
+            onClick={() => navigate(objectRecordPath(group.to, undefined, {
+              [group.inverse]: id,
+              back: objectRecordPath(object, id),
+            }))}
+          >
+            Add {group.to}
+          </Button>
+        </div>
+      )}
+      {link && (
+        <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={linkRecord}>
+          <input className="form-control of-filter" value={draft} onChange={(event) => setDraft(event.target.value)} aria-label={`Id for ${group.name}`} placeholder="Existing record id" required />
+          <Button>Link</Button>
+        </form>
+      )}
+      <List>
+        {(group.records || []).map((record) => (
+          <ListButton key={record.id} onClick={() => navigate(objectRecordPath(group.to, record.id))}>
+            <strong>{record.data?.name || record.id}</strong>
+            <Meta>{group.to}</Meta>
+          </ListButton>
+        ))}
+      </List>
+      <Notice>{(group.records || []).length === 0 ? "None yet." : ""}</Notice>
+    </Panel>
   )
 }
 

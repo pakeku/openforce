@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test src/flow.test.js src/routes.test.js",
+    "test": "node --test src/flow.test.js src/routes.test.js src/relate.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -13,7 +13,15 @@ export function objectTablePath(name) {
   return `/objects/${encodeURIComponent(name)}`
 }
 
-export function objectRecordPath(name, id) {
-  if (id) return `/objects/${encodeURIComponent(name)}/${encodeURIComponent(id)}`
-  return `/objects/${encodeURIComponent(name)}/new`
+export function objectRecordPath(name, id, query) {
+  const path = id
+    ? `/objects/${encodeURIComponent(name)}/${encodeURIComponent(id)}`
+    : `/objects/${encodeURIComponent(name)}/new`
+  if (!query) return path
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") params.set(key, String(value))
+  }
+  const text = params.toString()
+  return text ? `${path}?${text}` : path
 }
