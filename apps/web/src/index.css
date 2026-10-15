@@ -126,6 +126,8 @@ tbody tr:hover { background: #f8fafc; }
 .brand-row, .brand-row nav { display: flex; gap: 0.75rem; align-items: center; }
 button.text[aria-current="page"] { font-weight: 700; }
 .app.wide { max-width: 1180px; }
+.home { display: grid; gap: 1rem; }
+.home .actions { margin-bottom: 0.75rem; }
 
 .flow-layout {
   display: grid;

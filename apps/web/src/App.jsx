@@ -2,6 +2,7 @@ import { useState } from "react"
 import { api } from "./api.js"
 import { Approvals } from "./Approvals.jsx"
 import { Flows } from "./Flows.jsx"
+import { Home } from "./Home.jsx"
 import { Notifications } from "./Notifications.jsx"
 import { Objects } from "./Objects.jsx"
 import { RecordPage, TablePage } from "./Records.jsx"
@@ -13,7 +14,7 @@ export default function App() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
-  const [screen, setScreen] = useState({ page: "objects" })
+  const [screen, setScreen] = useState({ page: "home" })
 
   function signIn(event) {
     event.preventDefault()
@@ -28,7 +29,7 @@ export default function App() {
         sessionStorage.setItem("openforce.token", next)
         setToken(next)
         setPassword("")
-        setScreen({ page: "objects" })
+        setScreen({ page: "home" })
       })
       .catch((err) => setError(err.message))
   }
@@ -41,17 +42,17 @@ export default function App() {
     setToken(next)
     setDraft("")
     setError("")
-    setScreen({ page: "objects" })
+    setScreen({ page: "home" })
   }
 
   function signOut() {
     sessionStorage.removeItem("openforce.token")
     setToken("")
     setPassword("")
-    setScreen({ page: "objects" })
+    setScreen({ page: "home" })
   }
 
-  const section = screen.page === "flows" ? "flows" : screen.page === "approvals" ? "approvals" : screen.page === "notifications" ? "notifications" : "objects"
+  const section = screen.page === "home" || screen.page === "flows" || screen.page === "approvals" || screen.page === "notifications" ? screen.page : "objects"
 
   let body
   if (token === "") {
@@ -75,6 +76,8 @@ export default function App() {
         </Panel>
       </main>
     )
+  } else if (screen.page === "home") {
+    body = <Home token={token} open={setScreen} />
   } else if (screen.page === "flows") {
     body = <Flows token={token} />
   } else if (screen.page === "approvals") {
@@ -92,9 +95,10 @@ export default function App() {
   return (
     <div className={section === "flows" ? "app wide" : "app"}>
       <header className="topbar">
-        <Button variant="brand" onClick={() => setScreen({ page: "objects" })}>Openforce</Button>
+        <Button variant="brand" onClick={() => setScreen({ page: "home" })}>Openforce</Button>
         {token && (
           <nav>
+            <Button variant="text" aria-current={section === "home" ? "page" : undefined} onClick={() => setScreen({ page: "home" })}>Home</Button>
             <Button variant="text" aria-current={section === "objects" ? "page" : undefined} onClick={() => setScreen({ page: "objects" })}>Objects</Button>
             <Button variant="text" aria-current={section === "flows" ? "page" : undefined} onClick={() => setScreen({ page: "flows" })}>Flows</Button>
             <Button variant="text" aria-current={section === "approvals" ? "page" : undefined} onClick={() => setScreen({ page: "approvals" })}>Approvals</Button>

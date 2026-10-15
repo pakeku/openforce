@@ -176,7 +176,7 @@ A missing `-url`, `-token`, or `-dir` exits 2 and names the flag. An API error i
 
 ## Work with records
 
-The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page. The record page lists that audit response. The Flows screen draws a workflow with [React Flow](https://reactflow.dev/learn) and saves that chain through the automation API, including one approval on the match path. The Approvals screen lists the caller's pending approvals and posts approve or reject. The signed-in header opens Notifications for `GET /api/notifications`.
+The web app in `apps/web` is the UI runtime. It renders a table and a record page from the object's view and layout, so a new object does not need its own React page. The record page lists that audit response. The Flows screen draws a workflow with [React Flow](https://reactflow.dev/learn) and saves that chain through the automation API, including one approval on the match path. The Approvals screen lists the caller's pending approvals and posts approve or reject. The signed-in header opens Notifications for `GET /api/notifications`. Home is the page after sign-in and summarizes approvals, notifications, and objects.
 
 ```text
 cd apps/web
