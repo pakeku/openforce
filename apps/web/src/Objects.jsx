@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "./api.js"
+import { FieldEditor } from "./Fields.jsx"
+import { fieldPayload, linkTargets } from "./fields.js"
 import { dedupeRelationships, relationshipRequests } from "./relate.js"
-import { objectTablePath } from "./routes.js"
-import { Actions, Button, Field, List, ListButton, ListItem, Meta, Notice, Page, Panel } from "./ui.jsx"
+import { objectFieldsPath, objectTablePath } from "./routes.js"
+import { Actions, Button, Field, List, ListItem, Meta, Notice, Page, Panel } from "./ui.jsx"
 
-const fieldTypes = ["text", "number", "currency", "date", "boolean", "enum"]
 const namePattern = /^[a-z][a-z0-9_]*$/
 
 const kindHelp = {
@@ -20,7 +21,7 @@ export function Objects({ token }) {
   const [error, setError] = useState("")
   const [name, setName] = useState("")
   const [label, setLabel] = useState("")
-  const [fields, setFields] = useState([{ name: "name", type: "text", required: true, options: "" }])
+  const [fields, setFields] = useState([{ name: "name", type: "text", required: true, options: "", to: "" }])
   const [kind, setKind] = useState("subobjects")
   const [from, setFrom] = useState("")
   const [to, setTo] = useState("")
@@ -55,16 +56,11 @@ export function Objects({ token }) {
       await api(token, "POST", "/api/meta/objects", {
         name,
         label,
-        fields: fields.filter((field) => field.name).map((field) => ({
-          name: field.name,
-          type: field.type,
-          required: field.required,
-          options: field.type === "enum" ? field.options.split(",").map((item) => item.trim()).filter(Boolean) : undefined,
-        })),
+        fields: fields.filter((field) => field.name).map((field) => fieldPayload(field)),
       })
       setName("")
       setLabel("")
-      setFields([{ name: "name", type: "text", required: true, options: "" }])
+      setFields([{ name: "name", type: "text", required: true, options: "", to: "" }])
       await reload()
     } catch (err) {
       setError(err.message)
@@ -108,44 +104,42 @@ export function Objects({ token }) {
       <Notice tone="error">{error}</Notice>
       <List>
         {objects.map((object) => (
-          <ListButton key={object.id} onClick={() => navigate(objectTablePath(object.name))}>
-            <strong>{object.label}</strong>
-            <Meta>{object.name}</Meta>
-          </ListButton>
+          <ListItem
+            key={object.id}
+            title={object.label}
+            meta={<Meta>{object.name}</Meta>}
+            actions={(
+              <Actions>
+                <Button type="button" variant="secondary" onClick={() => navigate(objectFieldsPath(object.name))}>Fields</Button>
+                <Button type="button" variant="secondary" onClick={() => navigate(objectTablePath(object.name))}>Records</Button>
+              </Actions>
+            )}
+          />
         ))}
       </List>
       <Panel title="New object" onSubmit={createObject}>
         <Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
         <Field label="Label"><input value={label} onChange={(event) => setLabel(event.target.value)} required /></Field>
+        <Notice>Choose link to point a field at another object. Create that object first, or link this object to itself.</Notice>
         {fields.map((field, index) => (
-          <div className="row g-2 align-items-center mb-2" key={index}>
-            <div className="col-12 col-md">
-              <input className="form-control" value={field.name} aria-label="Field name" onChange={(event) => updateField(index, { name: event.target.value })} />
-            </div>
-            <div className="col-12 col-md-3">
-              <select className="form-select" value={field.type} aria-label="Field type" onChange={(event) => updateField(index, { type: event.target.value })}>
-                {fieldTypes.map((type) => <option key={type}>{type}</option>)}
-              </select>
-            </div>
-            <div className="col-auto">
-              <label className="form-check mb-0">
-                <input className="form-check-input" type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />
-                <span className="form-check-label">Required</span>
-              </label>
-            </div>
-            {field.type === "enum" && (
-              <div className="col-12">
-                <input className="form-control" value={field.options} placeholder="options, comma separated" onChange={(event) => updateField(index, { options: event.target.value })} />
-              </div>
-            )}
-          </div>
+          <FieldEditor
+            key={index}
+            field={field}
+            objects={linkTargets(objects, name, label)}
+            nameRequired={false}
+            onChange={(patch) => updateField(index, patch)}
+          />
         ))}
         <Actions>
-          <Button type="button" variant="secondary" onClick={() => setFields([...fields, { name: "", type: "text", required: false, options: "" }])}>Add field</Button>
+          <Button type="button" variant="secondary" onClick={() => setFields([...fields, { name: "", type: "text", required: false, options: "", to: "" }])}>Add field</Button>
           <Button>Create object</Button>
         </Actions>
       </Panel>
-      <Panel title="Relate objects" onSubmit={createRelationship}>
+      <details className="card mb-3">
+        <summary className="card-header of-disclosure">Child lists and links</summary>
+        <form onSubmit={createRelationship}>
+          <div className="card-body">
+      <Notice>A link to one record is a field on the object. Use this when a record should list many children, or when records link both ways.</Notice>
         <Notice>{kindHelp[kind]}</Notice>
         <Field label="Kind">
           <select value={kind} onChange={(event) => setKind(event.target.value)}>
@@ -180,7 +174,9 @@ export function Objects({ token }) {
           </Field>
         )}
         <Button>Add relationship</Button>
-      </Panel>
+          </div>
+        </form>
+      </details>
       {relationships.map((group) => (
         <Panel key={group.object} title={group.label}>
           <List>

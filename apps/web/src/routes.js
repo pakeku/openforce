@@ -13,6 +13,10 @@ export function objectTablePath(name) {
   return `/objects/${encodeURIComponent(name)}`
 }
 
+export function objectFieldsPath(name) {
+  return `/objects/${encodeURIComponent(name)}/fields`
+}
+
 export function objectRecordPath(name, id, query) {
   const path = id
     ? `/objects/${encodeURIComponent(name)}/${encodeURIComponent(id)}`

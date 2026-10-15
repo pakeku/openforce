@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { isWide, objectRecordPath, objectTablePath, shellPath } from "./routes.js"
+import { isWide, objectFieldsPath, objectRecordPath, objectTablePath, shellPath } from "./routes.js"
 
 test("shell paths name the signed-in section", () => {
   assert.equal(shellPath("/home"), "home")
@@ -18,6 +18,7 @@ test("flows is the wide page", () => {
 
 test("object urls keep one table and one record renderer", () => {
   assert.equal(objectTablePath("todo"), "/objects/todo")
+  assert.equal(objectFieldsPath("todo"), "/objects/todo/fields")
   assert.equal(objectRecordPath("comment"), "/objects/comment/new")
   assert.equal(objectRecordPath("todo", "abc"), "/objects/todo/abc")
 })

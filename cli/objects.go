@@ -28,6 +28,7 @@ type fieldFile struct {
 	Type     string   `json:"type"`
 	Required bool     `json:"required"`
 	Options  []string `json:"options,omitempty"`
+	To       string   `json:"to,omitempty"`
 }
 
 type differError struct {
@@ -210,6 +211,9 @@ func canonical(in objectFile) objectFile {
 		if field.Type == "enum" {
 			next.Options = field.Options
 		}
+		if field.Type == "relation" {
+			next.To = field.To
+		}
 		out.Fields = append(out.Fields, next)
 	}
 	return out
@@ -221,7 +225,7 @@ func sameObject(a, b objectFile) bool {
 	}
 	for i := range a.Fields {
 		af, bf := a.Fields[i], b.Fields[i]
-		if af.Name != bf.Name || af.Type != bf.Type || af.Required != bf.Required {
+		if af.Name != bf.Name || af.Type != bf.Type || af.Required != bf.Required || af.To != bf.To {
 			return false
 		}
 		if !sameList(af.Options, bf.Options) {

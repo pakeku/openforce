@@ -61,6 +61,10 @@ body {
   max-width: 100%;
 }
 
+summary.of-disclosure {
+  cursor: pointer;
+}
+
 .flow-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;

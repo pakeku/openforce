@@ -26,6 +26,7 @@ type fieldBody struct {
 	Type     string   `json:"type"`
 	Required bool     `json:"required"`
 	Options  []string `json:"options"`
+	To       string   `json:"to"`
 }
 
 type objectBody struct {
@@ -40,6 +41,7 @@ type fieldView struct {
 	Required bool     `json:"required"`
 	Options  []string `json:"options,omitempty"`
 	Position int      `json:"position"`
+	To       string   `json:"to,omitempty"`
 }
 
 type objectView struct {
@@ -137,26 +139,39 @@ func validateObjectBody(body objectBody) error {
 			return apiErr(http.StatusBadRequest, "duplicate field")
 		}
 		seen[field.Name] = struct{}{}
-		if field.Type == "relation" || field.Type == "formula" {
-			return apiErr(http.StatusBadRequest, "relation and formula are not accepted here")
+		if err := validateField(field); err != nil {
+			return err
 		}
-		switch field.Type {
-		case "text", "number", "currency", "date", "boolean":
-			if len(field.Options) > 0 {
-				return apiErr(http.StatusBadRequest, "options are only valid for enum")
-			}
-		case "enum":
-			if len(field.Options) == 0 {
+	}
+	return nil
+}
+
+func validateField(field fieldBody) error {
+	if !namePattern.MatchString(field.Name) {
+		return apiErr(http.StatusBadRequest, "invalid name")
+	}
+	if field.Type == "formula" || (field.Type == "relation" && field.To == "") {
+		return apiErr(http.StatusBadRequest, "relation and formula are not accepted here")
+	}
+	switch field.Type {
+	case "text", "number", "currency", "date", "boolean", "relation":
+		if len(field.Options) > 0 {
+			return apiErr(http.StatusBadRequest, "options are only valid for enum")
+		}
+		if field.Type == "relation" && !namePattern.MatchString(field.To) {
+			return apiErr(http.StatusBadRequest, "invalid name")
+		}
+	case "enum":
+		if len(field.Options) == 0 {
+			return apiErr(http.StatusBadRequest, "enum requires options")
+		}
+		for _, option := range field.Options {
+			if option == "" {
 				return apiErr(http.StatusBadRequest, "enum requires options")
 			}
-			for _, option := range field.Options {
-				if option == "" {
-					return apiErr(http.StatusBadRequest, "enum requires options")
-				}
-			}
-		default:
-			return apiErr(http.StatusBadRequest, "invalid field type")
 		}
+	default:
+		return apiErr(http.StatusBadRequest, "invalid field type")
 	}
 	return nil
 }
@@ -180,7 +195,24 @@ func (s *server) insertObject(ctx context.Context, a actor, body objectBody) (ob
 		return objectView{}, err
 	}
 	for i, field := range body.Fields {
-		if err := insertField(ctx, tx, a.OrgID, objectID, field.Name, field.Type, field.Required, field.Options, i); err != nil {
+		options := field.Options
+		if field.Type != "enum" {
+			options = nil
+		}
+		if err := insertField(ctx, tx, a.OrgID, objectID, field.Name, field.Type, field.Required, options, i); err != nil {
+			if isUnique(err) {
+				return objectView{}, apiErr(http.StatusConflict, "field already exists")
+			}
+			return objectView{}, err
+		}
+		if field.Type != "relation" {
+			continue
+		}
+		targetID, err := objectIDTx(ctx, tx, a.OrgID, field.To)
+		if err != nil {
+			return objectView{}, err
+		}
+		if err := insertBelongsTo(ctx, tx, a.OrgID, objectID, targetID, field.Name); err != nil {
 			return objectView{}, err
 		}
 	}
@@ -268,10 +300,15 @@ func (s *server) loadObjects(ctx context.Context, orgID, name string) ([]objectV
 
 func (s *server) loadFields(ctx context.Context, objectID string) ([]fieldView, error) {
 	rows, err := s.pool.Query(ctx, `
-		select name, field_type, required, options, position
-		from field_definitions
-		where object_id = $1
-		order by position, name
+		select f.name, f.field_type, f.required, f.options, f.position, tgt.name
+		from field_definitions f
+		left join relationship_definitions r
+		  on r.from_object_id = f.object_id
+		 and r.name = f.name
+		 and r.kind = 'belongs_to'
+		left join object_definitions tgt on tgt.id = r.to_object_id
+		where f.object_id = $1
+		order by f.position, f.name
 	`, objectID)
 	if err != nil {
 		return nil, err
@@ -281,13 +318,17 @@ func (s *server) loadFields(ctx context.Context, objectID string) ([]fieldView, 
 	for rows.Next() {
 		var field fieldView
 		var raw []byte
-		if err := rows.Scan(&field.Name, &field.Type, &field.Required, &raw, &field.Position); err != nil {
+		var target *string
+		if err := rows.Scan(&field.Name, &field.Type, &field.Required, &raw, &field.Position, &target); err != nil {
 			return nil, err
 		}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &field.Options); err != nil {
 				return nil, err
 			}
+		}
+		if target != nil {
+			field.To = *target
 		}
 		fields = append(fields, field)
 	}

@@ -380,6 +380,29 @@ func (f *fakeMeta) serveCreate(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"id": "new", "name": file.Name})
 }
 
+func TestCanonicalKeepsRelationTarget(t *testing.T) {
+	live := canonical(objectFile{
+		Name:  "person",
+		Label: "Person",
+		Fields: []fieldFile{
+			{Name: "name", Type: "text", To: "company"},
+			{Name: "employer", Type: "relation", Required: false, To: "company"},
+		},
+	})
+	if live.Fields[0].To != "" || live.Fields[1].To != "company" {
+		t.Fatalf("canonical %#v", live.Fields)
+	}
+	other := live
+	other.Fields = append([]fieldFile(nil), live.Fields...)
+	other.Fields[1].To = "account"
+	if sameObject(live, other) {
+		t.Fatal("a different link target compared equal")
+	}
+	if !sameObject(live, live) {
+		t.Fatal("the same link target compared different")
+	}
+}
+
 func writeFakeErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

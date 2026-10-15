@@ -2,6 +2,7 @@ import { useState } from "react"
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { api } from "./api.js"
 import { Approvals } from "./Approvals.jsx"
+import { Fields } from "./Fields.jsx"
 import { Flows } from "./Flows.jsx"
 import { Home } from "./Home.jsx"
 import { Notifications } from "./Notifications.jsx"
@@ -135,6 +136,7 @@ function Shell() {
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/home" element={<Home token={token} />} />
             <Route path="/objects" element={<Objects token={token} />} />
+            <Route path="/objects/:name/fields" element={<FieldsRoute token={token} />} />
             <Route path="/objects/:name/new" element={<RecordRoute token={token} />} />
             <Route path="/objects/:name/:id" element={<RecordRoute token={token} />} />
             <Route path="/objects/:name" element={<TableRoute token={token} />} />
@@ -147,6 +149,11 @@ function Shell() {
       </main>
     </div>
   )
+}
+
+function FieldsRoute({ token }) {
+  const { name } = useParams()
+  return <Fields token={token} object={name} />
 }
 
 function TableRoute({ token }) {

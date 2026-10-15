@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "./api.js"
 import { dedupeRelationships, isChildList, isLinkList, safeReturnPath } from "./relate.js"
-import { objectRecordPath, objectTablePath } from "./routes.js"
+import { objectFieldsPath, objectRecordPath, objectTablePath } from "./routes.js"
 import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
 
 export function TablePage({ token, object }) {
@@ -36,7 +36,15 @@ export function TablePage({ token, object }) {
   }
 
   return (
-    <Page title={object} actions={<Button type="button" onClick={() => navigate(objectRecordPath(object))}>New record</Button>}>
+    <Page
+      title={object}
+      actions={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => navigate(objectFieldsPath(object))}>Fields</Button>
+          <Button type="button" onClick={() => navigate(objectRecordPath(object))}>New record</Button>
+        </>
+      )}
+    >
       <Notice tone="error">{error}</Notice>
       <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={applyFilter}>
         <input className="form-control of-filter" value={field} onChange={(event) => setField(event.target.value)} aria-label="Filter field" />
