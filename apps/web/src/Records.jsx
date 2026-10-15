@@ -70,6 +70,7 @@ export function RecordPage({ token, object, id, open }) {
   const [related, setRelated] = useState([])
   const [data, setData] = useState({})
   const [version, setVersion] = useState(0)
+  const [entries, setEntries] = useState([])
   const [error, setError] = useState("")
 
   useEffect(() => {
@@ -88,17 +89,22 @@ export function RecordPage({ token, object, id, open }) {
         setData({})
         setVersion(0)
         setRelated([])
+        setEntries([])
         return
       }
-      const record = await api(token, "GET", `/api/objects/${object}/${id}`)
-      const groups = await Promise.all(links.relationships.map(async (link) => {
-        const body = await api(token, "GET", `/api/objects/${object}/${id}/related/${link.name}`)
-        return { ...link, records: body.records }
-      }))
+      const [record, groups, audit] = await Promise.all([
+        api(token, "GET", `/api/objects/${object}/${id}`),
+        Promise.all(links.relationships.map(async (link) => {
+          const body = await api(token, "GET", `/api/objects/${object}/${id}/related/${link.name}`)
+          return { ...link, records: body.records }
+        })),
+        api(token, "GET", `/api/objects/${object}/${id}/audit`),
+      ])
       if (!live) return
       setData(record.data)
       setVersion(record.version)
       setRelated(groups)
+      setEntries(audit.entries || [])
     }
     load().catch((err) => { if (live) setError(err.message) })
     return () => { live = false }
@@ -183,6 +189,28 @@ export function RecordPage({ token, object, id, open }) {
           <Notice>{group.records.length === 0 ? "None yet." : ""}</Notice>
         </section>
       ))}
+      {id && (
+        <section>
+          <h2>Activity</h2>
+          {entries.length === 0 && <Notice>No activity yet.</Notice>}
+          <ul className="activity-list">
+            {entries.map((entry) => (
+              <li key={entry.id} className="activity-row">
+                <div>
+                  <strong>{entry.name}</strong>
+                  {(entry.field != null || entry.before != null || entry.after != null) && (
+                    <span>{entry.field != null ? `${entry.field}: ` : ""}{auditValue(entry.before)} → {auditValue(entry.after)}</span>
+                  )}
+                  <span>{entry.source}</span>
+                  <span>{entry.actor_id}</span>
+                  <span>{entry.event_id}</span>
+                  <span>{entry.created_at}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </Page>
   )
 }
@@ -217,4 +245,9 @@ function show(value) {
   if (value === false) return "no"
   if (value === undefined || value === null || value === "") return ""
   return String(value)
+}
+
+function auditValue(value) {
+  if (value !== null && typeof value === "object") return JSON.stringify(value)
+  return show(value)
 }

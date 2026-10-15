@@ -168,6 +168,19 @@ button.text[aria-current="page"] { font-weight: 700; }
   margin-bottom: 0.5rem;
 }
 .approval-row span { color: #667085; display: block; }
+.activity-list { list-style: none; padding: 0; margin: 0; }
+.activity-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  background: white;
+  border: 1px solid #e1e4ea;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.activity-row span { color: #667085; display: block; }
 
 @media (max-width: 800px) {
   header, .topbar { align-items: stretch; flex-direction: column; }
