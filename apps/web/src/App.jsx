@@ -2,6 +2,7 @@ import { useState } from "react"
 import { api } from "./api.js"
 import { Approvals } from "./Approvals.jsx"
 import { Flows } from "./Flows.jsx"
+import { Notifications } from "./Notifications.jsx"
 import { Objects } from "./Objects.jsx"
 import { RecordPage, TablePage } from "./Records.jsx"
 import { Button, Field, Notice, Panel } from "./ui.jsx"
@@ -50,7 +51,7 @@ export default function App() {
     setScreen({ page: "objects" })
   }
 
-  const section = screen.page === "flows" ? "flows" : screen.page === "approvals" ? "approvals" : "objects"
+  const section = screen.page === "flows" ? "flows" : screen.page === "approvals" ? "approvals" : screen.page === "notifications" ? "notifications" : "objects"
 
   let body
   if (token === "") {
@@ -78,6 +79,8 @@ export default function App() {
     body = <Flows token={token} />
   } else if (screen.page === "approvals") {
     body = <Approvals token={token} />
+  } else if (screen.page === "notifications") {
+    body = <Notifications token={token} />
   } else if (screen.page === "table") {
     body = <TablePage token={token} object={screen.object} open={setScreen} />
   } else if (screen.page === "record") {
@@ -95,6 +98,7 @@ export default function App() {
             <Button variant="text" aria-current={section === "objects" ? "page" : undefined} onClick={() => setScreen({ page: "objects" })}>Objects</Button>
             <Button variant="text" aria-current={section === "flows" ? "page" : undefined} onClick={() => setScreen({ page: "flows" })}>Flows</Button>
             <Button variant="text" aria-current={section === "approvals" ? "page" : undefined} onClick={() => setScreen({ page: "approvals" })}>Approvals</Button>
+            <Button variant="text" aria-current={section === "notifications" ? "page" : undefined} onClick={() => setScreen({ page: "notifications" })}>Notifications</Button>
           </nav>
         )}
         {token && <Button variant="text" onClick={signOut}>Sign out</Button>}
