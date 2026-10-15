@@ -378,8 +378,8 @@ func TestKanbanView(t *testing.T) {
 		body map[string]any
 		err  string
 	}{
-		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "timeline", "group": "industry"}, "invalid view"},
-		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "table", "group": "industry"}, "group is only valid for kanban or calendar"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "dashboard", "group": "industry"}, "invalid view"},
+		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "table", "group": "industry"}, "group is only valid for kanban, calendar, or timeline"},
 		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban", "group": "name"}, "group must be an enum"},
 		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban"}, "group must be an enum"},
 		{map[string]any{"name": "pipeline", "label": "Pipeline", "kind": "kanban", "group": "missing"}, "group must be an enum"},
@@ -457,7 +457,7 @@ func TestKanbanView(t *testing.T) {
 		"kind":    "table",
 	})
 	requireStatus(t, rec, http.StatusBadRequest)
-	if errorOf(t, rec) != "group is only valid for kanban or calendar" {
+	if errorOf(t, rec) != "group is only valid for kanban, calendar, or timeline" {
 		t.Fatalf("body %s", rec.Body.String())
 	}
 
@@ -535,11 +535,11 @@ func TestCalendarView(t *testing.T) {
 		body map[string]any
 		err  string
 	}{
-		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "timeline", "group": "renews"}, "invalid view"},
+		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "dashboard", "group": "renews"}, "invalid view"},
 		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "calendar", "group": "industry"}, "group must be a date"},
 		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "calendar"}, "group must be a date"},
 		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "calendar", "group": "missing"}, "group must be a date"},
-		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "table", "group": "renews"}, "group is only valid for kanban or calendar"},
+		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "table", "group": "renews"}, "group is only valid for kanban, calendar, or timeline"},
 		{map[string]any{"name": "renewals", "label": "Renewals", "kind": "kanban", "group": "renews"}, "group must be an enum"},
 	}
 	for _, item := range rejected {
@@ -598,7 +598,7 @@ func TestCalendarView(t *testing.T) {
 		"kind":    "table",
 	})
 	requireStatus(t, rec, http.StatusBadRequest)
-	if errorOf(t, rec) != "group is only valid for kanban or calendar" {
+	if errorOf(t, rec) != "group is only valid for kanban, calendar, or timeline" {
 		t.Fatalf("body %s", rec.Body.String())
 	}
 
@@ -631,6 +631,145 @@ func TestCalendarView(t *testing.T) {
 	}
 	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", member, map[string]any{
 		"name": "membermonth", "label": "Member", "kind": "calendar", "group": "renews",
+	})
+	requireExactForbidden(t, rec)
+}
+
+func TestTimelineView(t *testing.T) {
+	token := newOwner(t, "Timeline", "timeline@example.com")
+	orgID := orgOf(t, token)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `delete from jobs where organization_id = $1::uuid`, orgID)
+	})
+	postObject(t, token, companyObject())
+	for _, name := range []string{"starts", "ends", "due"} {
+		rec := apiDo(t, http.MethodPost, "/api/meta/objects/company/fields", token, map[string]any{
+			"name": name, "type": "date",
+		})
+		requireStatus(t, rec, http.StatusCreated)
+	}
+
+	rejected := []struct {
+		body map[string]any
+		err  string
+	}{
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "timeline", "group": "industry", "end": "ends"}, "group must be a date"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "timeline", "end": "ends"}, "group must be a date"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "timeline", "group": "starts", "end": "industry"}, "end must be a date"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "timeline", "group": "starts"}, "end must be a date"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "timeline", "group": "starts", "end": "starts"}, "end must be a different date"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "table", "end": "ends"}, "end is only valid for timeline"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "calendar", "group": "starts", "end": "ends"}, "end is only valid for timeline"},
+		{map[string]any{"name": "schedule", "label": "Schedule", "kind": "kanban", "group": "industry", "end": "ends"}, "end is only valid for timeline"},
+	}
+	for _, item := range rejected {
+		rec := apiDo(t, http.MethodPost, "/api/meta/objects/company/views", token, item.body)
+		requireStatus(t, rec, http.StatusBadRequest)
+		if errorOf(t, rec) != item.err {
+			t.Fatalf("body %s", rec.Body.String())
+		}
+	}
+
+	rec := apiDo(t, http.MethodPost, "/api/meta/objects/company/views", token, map[string]any{
+		"name":    "schedule",
+		"label":   "Schedule",
+		"kind":    "timeline",
+		"group":   "starts",
+		"end":     "ends",
+		"columns": []string{"name"},
+	})
+	requireStatus(t, rec, http.StatusCreated)
+	var span storedView
+	mustJSON(t, rec, &span)
+	if span.Kind != "timeline" || span.Group != "starts" || span.End != "ends" || len(span.Columns) != 1 || span.Columns[0] != "name" {
+		t.Fatalf("timeline %#v", span)
+	}
+
+	acme := postRecord(t, token, "company", map[string]any{
+		"name": "Acme", "employees": 10, "starts": "2026-10-02", "ends": "2026-10-06",
+	})
+	listed := listRecords(t, token, "company", "view=schedule&limit=200")
+	if len(listed) != 1 || listed[0].Data["name"] != "Acme" || listed[0].Data["starts"] != "2026-10-02" || listed[0].Data["ends"] != "2026-10-06" {
+		t.Fatalf("timeline list %#v", listed)
+	}
+	if _, ok := listed[0].Data["employees"]; ok {
+		t.Fatalf("hidden column %#v", listed[0].Data)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/objects/company/"+acme.ID, token, map[string]any{
+		"version": acme.Version,
+		"data":    map[string]any{"starts": "2026-10-10", "ends": "2026-10-14"},
+	})
+	requireStatus(t, rec, http.StatusOK)
+	moved := getRecord(t, token, "company", acme.ID)
+	if moved.Data["starts"] != "2026-10-10" || moved.Data["ends"] != "2026-10-14" || moved.Version != acme.Version+1 {
+		t.Fatalf("moved %#v", moved)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/schedule", token, map[string]any{
+		"version": span.Version,
+		"label":   "Project schedule",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &span)
+	if span.Version != 2 || span.Label != "Project schedule" || span.Kind != "timeline" || span.Group != "starts" || span.End != "ends" {
+		t.Fatalf("label patch %#v", span)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/schedule", token, map[string]any{
+		"version": span.Version,
+		"kind":    "table",
+	})
+	requireStatus(t, rec, http.StatusBadRequest)
+	if errorOf(t, rec) != "end is only valid for timeline" {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/schedule", token, map[string]any{
+		"version": span.Version,
+		"kind":    "table",
+		"end":     "",
+	})
+	requireStatus(t, rec, http.StatusBadRequest)
+	if errorOf(t, rec) != "group is only valid for kanban, calendar, or timeline" {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/schedule", token, map[string]any{
+		"version": span.Version,
+		"end":     "due",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	var regrouped storedView
+	mustJSON(t, rec, &regrouped)
+	if regrouped.Kind != "timeline" || regrouped.Group != "starts" || regrouped.End != "due" || regrouped.Version != 3 {
+		t.Fatalf("regroup %#v", regrouped)
+	}
+
+	rec = apiDo(t, http.MethodPatch, "/api/meta/objects/company/views/schedule", token, map[string]any{
+		"version": regrouped.Version,
+		"kind":    "table",
+		"group":   "",
+		"end":     "",
+	})
+	requireStatus(t, rec, http.StatusOK)
+	var cleared storedView
+	mustJSON(t, rec, &cleared)
+	if cleared.Kind != "table" || cleared.Group != "" || cleared.End != "" {
+		t.Fatalf("back to table %#v", cleared)
+	}
+	rec = apiDo(t, http.MethodGet, "/api/meta/objects/company/views/schedule", token, nil)
+	requireStatus(t, rec, http.StatusOK)
+	mustJSON(t, rec, &cleared)
+	if cleared.Kind != "table" || cleared.Group != "" || cleared.End != "" {
+		t.Fatalf("stored table %#v", cleared)
+	}
+
+	member, err := (&server{pool: testPool}).addMember(context.Background(), orgID, "Mia", "timeline-member@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = apiDo(t, http.MethodPost, "/api/meta/objects/company/views", member, map[string]any{
+		"name": "memberspan", "label": "Member", "kind": "timeline", "group": "starts", "end": "ends",
 	})
 	requireExactForbidden(t, rec)
 }

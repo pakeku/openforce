@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 import { api } from "./api.js"
 import { boardColumns, boardMove, cardColumn, cardTitle, cardsInColumn, viewNameOk } from "./board.js"
 import { calendarMove, cardsOnDay, monthLabel, monthWeeks, recordDay, shiftMonth, unscheduledCards, weekdays } from "./calendar.js"
+import { barIndexes, monthDays, recordSpan, shiftSpan, timelineMove } from "./timeline.js"
 import { dedupeRelationships, isChildList, isLinkList, safeReturnPath } from "./relate.js"
 import { objectFieldsPath, objectRecordPath, objectTablePath } from "./routes.js"
 import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
@@ -25,6 +26,7 @@ export function TablePage({ token, object }) {
   const [boardName, setBoardName] = useState("")
   const [boardLabel, setBoardLabel] = useState("")
   const [boardGroup, setBoardGroup] = useState("")
+  const [boardEnd, setBoardEnd] = useState("")
   const [viewKind, setViewKind] = useState("kanban")
 
   if (scope !== object) {
@@ -38,6 +40,7 @@ export function TablePage({ token, object }) {
     setBoardName("")
     setBoardLabel("")
     setBoardGroup("")
+    setBoardEnd("")
     setViewKind("kanban")
     setError("")
   }
@@ -54,7 +57,7 @@ export function TablePage({ token, object }) {
       const name = chosen?.name || "all"
       const params = new URLSearchParams(query)
       params.set("view", name)
-      if (chosen?.kind === "kanban" || chosen?.kind === "calendar") params.set("limit", "200")
+      if (chosen?.kind === "kanban" || chosen?.kind === "calendar" || chosen?.kind === "timeline") params.set("limit", "200")
       const body = await api(token, "GET", `/api/objects/${object}?${params}`)
       if (!live) return
       setError("")
@@ -84,9 +87,17 @@ export function TablePage({ token, object }) {
   const current = views.find((item) => item.name === viewName)
   const enums = fields.filter((item) => item.type === "enum")
   const dates = fields.filter((item) => item.type === "date")
-  const groupFields = viewKind === "calendar" ? dates : enums
-  const groupValue = groupFields.some((item) => item.name === boardGroup) ? boardGroup : (groupFields[0]?.name || "")
+  const groupFields = viewKind === "calendar" || viewKind === "timeline" ? dates : enums
+  const startValue = dates.some((item) => item.name === boardGroup) ? boardGroup : (dates[0]?.name || "")
+  const endValue = dates.some((item) => item.name === boardEnd && item.name !== startValue)
+    ? boardEnd
+    : (dates.find((item) => item.name !== startValue)?.name || "")
+  const groupValue = viewKind === "timeline"
+    ? startValue
+    : (groupFields.some((item) => item.name === boardGroup) ? boardGroup : (groupFields[0]?.name || ""))
   const groupField = fields.find((item) => item.name === current?.group)
+  const viewPlaceholder = viewKind === "timeline" ? "schedule" : viewKind === "calendar" ? "renewals" : "pipeline"
+  const labelPlaceholder = viewKind === "timeline" ? "Schedule" : viewKind === "calendar" ? "Renewals" : "Pipeline"
 
   async function createView(event) {
     event.preventDefault()
@@ -96,14 +107,20 @@ export function TablePage({ token, object }) {
       setError("invalid name")
       return
     }
+    if (viewKind === "timeline" && (!endValue || endValue === startValue)) {
+      setError("end must be a different date")
+      return
+    }
+    const body = {
+      name,
+      label: boardLabel.trim(),
+      kind: viewKind,
+      group: groupValue,
+      columns: ["*"],
+    }
+    if (viewKind === "timeline") body.end = endValue
     try {
-      await api(token, "POST", `/api/meta/objects/${object}/views`, {
-        name,
-        label: boardLabel.trim(),
-        kind: viewKind,
-        group: groupValue,
-        columns: ["*"],
-      })
+      await api(token, "POST", `/api/meta/objects/${object}/views`, body)
       setBoardName("")
       setBoardLabel("")
       setViewName(name)
@@ -139,6 +156,14 @@ export function TablePage({ token, object }) {
     moveRecord(record, calendarMove(current?.group, day), recordDay(record, current?.group) === day)
   }
 
+  function moveSpan(record, start, end) {
+    moveRecord(
+      record,
+      timelineMove(current?.group, current?.end, start, end),
+      recordDay(record, current?.group) === (start || "") && recordDay(record, current?.end) === (end || ""),
+    )
+  }
+
   return (
     <Page
       title={object}
@@ -164,23 +189,37 @@ export function TablePage({ token, object }) {
         <Button>Filter</Button>
       </form>
       {ready && enums.length === 0 && dates.length === 0 ? (
-        <Notice>Add an enum field to group a board, or a date field to group a calendar.</Notice>
+        <Notice>Add an enum field to group a board, a date field for a calendar, or two date fields for a timeline.</Notice>
       ) : ready ? (
         <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={createView}>
           <select className="form-select of-filter" value={viewKind} aria-label="View kind" onChange={(event) => setViewKind(event.target.value)}>
             <option value="kanban">Board</option>
             <option value="calendar">Calendar</option>
+            <option value="timeline">Timeline</option>
           </select>
-          {groupFields.length === 0 ? (
+          {viewKind === "timeline" && dates.length < 2 ? (
+            <Notice>Add two date fields to draw a timeline.</Notice>
+          ) : groupFields.length === 0 ? (
             <Notice>{viewKind === "calendar" ? "Add a date field to group a calendar." : "Add an enum field to group a board."}</Notice>
           ) : (
             <>
-              <input className="form-control of-filter" value={boardName} onChange={(event) => setBoardName(event.target.value)} aria-label="View name" placeholder={viewKind === "calendar" ? "renewals" : "pipeline"} required />
-              <input className="form-control of-filter" value={boardLabel} onChange={(event) => setBoardLabel(event.target.value)} aria-label="View label" placeholder={viewKind === "calendar" ? "Renewals" : "Pipeline"} required />
-              <select className="form-select of-filter" value={groupValue} aria-label="Group field" onChange={(event) => setBoardGroup(event.target.value)}>
-                {groupFields.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-              </select>
-              <Button>{viewKind === "calendar" ? "Add calendar" : "Add board"}</Button>
+              <input className="form-control of-filter" value={boardName} onChange={(event) => setBoardName(event.target.value)} aria-label="View name" placeholder={viewPlaceholder} required />
+              <input className="form-control of-filter" value={boardLabel} onChange={(event) => setBoardLabel(event.target.value)} aria-label="View label" placeholder={labelPlaceholder} required />
+              {viewKind === "timeline" ? (
+                <>
+                  <select className="form-select of-filter" value={startValue} aria-label="Start field" onChange={(event) => setBoardGroup(event.target.value)}>
+                    {dates.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                  </select>
+                  <select className="form-select of-filter" value={endValue} aria-label="End field" onChange={(event) => setBoardEnd(event.target.value)}>
+                    {dates.filter((item) => item.name !== startValue).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                  </select>
+                </>
+              ) : (
+                <select className="form-select of-filter" value={groupValue} aria-label="Group field" onChange={(event) => setBoardGroup(event.target.value)}>
+                  {groupFields.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+                </select>
+              )}
+              <Button>{viewKind === "timeline" ? "Add timeline" : viewKind === "calendar" ? "Add calendar" : "Add board"}</Button>
             </>
           )}
         </form>
@@ -199,6 +238,14 @@ export function TablePage({ token, object }) {
           records={records}
           onOpen={(id) => navigate(objectRecordPath(object, id))}
           onMove={moveDay}
+        />
+      ) : current?.kind === "timeline" ? (
+        <Timeline
+          group={current.group}
+          end={current.end}
+          records={records}
+          onOpen={(id) => navigate(objectRecordPath(object, id))}
+          onMove={moveSpan}
         />
       ) : (
         <div className="table-responsive card">
@@ -313,6 +360,108 @@ function Month({ group, records, onOpen, onMove }) {
             ))}
           </section>
         ))}
+      </div>
+    </div>
+  )
+}
+
+function Timeline({ group, end, records, onOpen, onMove }) {
+  const now = new Date()
+  const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 })
+  const days = monthDays(cursor.year, cursor.month)
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+  const template = { gridTemplateColumns: `14rem repeat(${days.length}, minmax(1.6rem, 1fr))` }
+  const loose = records.filter((record) => recordSpan(record, group, end).start === "")
+  const placed = records.filter((record) => recordSpan(record, group, end).start !== "")
+
+  function dropOn(event, day) {
+    event.preventDefault()
+    const id = event.dataTransfer.getData("text/plain")
+    const record = records.find((item) => item.id === id)
+    if (!record) return
+    const span = recordSpan(record, group, end)
+    const next = shiftSpan(span.start, span.end, day)
+    onMove(record, next.start, next.end)
+  }
+
+  return (
+    <div className="of-timeline">
+      <div className="d-flex justify-content-between align-items-center gap-2 mb-2">
+        <Button type="button" variant="secondary" onClick={() => setCursor((item) => shiftMonth(item.year, item.month, -1))}>Previous</Button>
+        <strong>{monthLabel(cursor.year, cursor.month)}</strong>
+        <Button type="button" variant="secondary" onClick={() => setCursor((item) => shiftMonth(item.year, item.month, 1))}>Next</Button>
+      </div>
+      {loose.length > 0 && (
+        <section className="of-unscheduled mb-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => dropOn(event, "")}>
+          <h2 className="h6">Unscheduled</h2>
+          {loose.map((record) => (
+            <TimelineLabel key={record.id} record={record} group={group} end={end} onOpen={onOpen} onMove={onMove} />
+          ))}
+        </section>
+      )}
+      <div className="of-time-row of-time-head" style={template}>
+        <div className="of-time-label" />
+        {days.map((day) => (
+          <div
+            key={day}
+            className={`of-time-cell${day === today ? " today" : ""}`}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => dropOn(event, day)}
+          >
+            {Number(day.slice(8))}
+          </div>
+        ))}
+      </div>
+      {placed.map((record) => {
+        const span = recordSpan(record, group, end)
+        const place = barIndexes(span.start, span.end, days)
+        return (
+          <div key={record.id} className="of-time-row" style={template}>
+            <TimelineLabel record={record} group={group} end={end} onOpen={onOpen} onMove={onMove} />
+            {days.map((day) => (
+              <div
+                key={day}
+                className={`of-time-cell${day === today ? " today" : ""}`}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => dropOn(event, day)}
+              />
+            ))}
+            {place && (
+              <div
+                className="of-time-bar"
+                draggable
+                title={cardTitle(record)}
+                style={{ gridColumn: `${place.from + 2} / ${place.to + 3}` }}
+                onDragStart={(event) => event.dataTransfer.setData("text/plain", record.id)}
+              />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function TimelineLabel({ record, group, end, onOpen, onMove }) {
+  const span = recordSpan(record, group, end)
+  return (
+    <div className="of-time-label">
+      <button type="button" className="btn btn-link p-0" onClick={() => onOpen(record.id)}>{cardTitle(record)}</button>
+      <div className="d-flex gap-1 mt-1">
+        <input
+          className="form-control form-control-sm"
+          type="date"
+          aria-label={`Start ${cardTitle(record)}`}
+          value={span.start}
+          onChange={(event) => onMove(record, event.target.value, span.end)}
+        />
+        <input
+          className="form-control form-control-sm"
+          type="date"
+          aria-label={`End ${cardTitle(record)}`}
+          value={span.end}
+          onChange={(event) => onMove(record, span.start, event.target.value)}
+        />
       </div>
     </div>
   )

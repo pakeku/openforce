@@ -42,8 +42,11 @@ func (s *server) resolveList(r *http.Request, orgID, objectID string, defs []fie
 			return q, err
 		}
 		q.Columns = view.Columns
-		if view.Kind == "kanban" || view.Kind == "calendar" {
+		if view.Kind == "kanban" || view.Kind == "calendar" || view.Kind == "timeline" {
 			q.Columns = appendGroupColumn(view.Columns, view.Group)
+		}
+		if view.Kind == "timeline" {
+			q.Columns = appendGroupColumn(q.Columns, view.End)
 		}
 		for _, filter := range view.Filters {
 			if err := q.addFilter(byName, filter.Field, filter.Operator, filter.Value); err != nil {
