@@ -6,7 +6,8 @@ import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefor
 
 const events = ["record.created", "record.updated", "record.deleted"]
 const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains"]
-const actionTypes = ["create", "update", "delete", "http", "approval"]
+const actionTypes = ["create", "update", "delete", "http", "approval", "loop"]
+const stepTypes = ["create", "update", "delete", "http"]
 
 const nodeTypes = {
   trigger: TriggerNode,
@@ -142,11 +143,21 @@ export function Flows({ token }) {
 
   function addStep(kind) {
     const id = `${kind}-${crypto.randomUUID()}`
+    const blank = { object: "", url: "", user: "", recordMode: "", recordField: "", rows: [] }
     const data = kind === "condition"
       ? { field: "", op: "eq", value: "" }
       : kind === "approval"
-        ? { type: "approval", object: "", url: "", user: "", recordMode: "", recordField: "", rows: [] }
-        : { type: "create", object: editor.object, url: "", user: "", recordMode: "", recordField: "", rows: [], ...(kind === "else" ? { path: "else" } : {}) }
+        ? { type: "approval", ...blank }
+        : kind === "loop"
+          ? {
+            type: "loop",
+            ...blank,
+            object: editor.object,
+            limit: "25",
+            where: [],
+            steps: [{ type: "update", ...blank }],
+          }
+          : { type: "create", ...blank, object: editor.object, ...(kind === "else" ? { path: "else" } : {}) }
     const node = { id, type: kind === "condition" ? "condition" : "action", data }
     const graph = kind === "condition"
       ? insertBefore(editor.nodes, editor.edges, node, "action")
@@ -301,7 +312,7 @@ export function Flows({ token }) {
           </ReactFlow>
         </div>
         <form className="card card-body" onSubmit={save}>
-          <Notice>Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path.</Notice>
+          <Notice>Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path. A loop visits matching records, up to a limit, and runs its actions on each.</Notice>
           {selected?.type === "trigger" && (
             <>
               <h2 className="h5">Trigger</h2>
@@ -350,6 +361,7 @@ export function Flows({ token }) {
           <div className="d-flex flex-wrap gap-2 mb-3">
             {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("condition")}>Add condition</Button>}
             <Button type="button" variant="secondary" onClick={() => addStep("action")}>Add action</Button>
+            {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("loop")}>Add loop</Button>}
             <Button type="button" variant="secondary" onClick={() => addStep("approval")}>Add approval</Button>
             {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("else")}>Add else</Button>}
             <Button>Save</Button>
@@ -403,28 +415,129 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
   function patch(next) {
     onChange({ ...data, ...next })
   }
-  function patchRow(index, next) {
-    patch({ rows: data.rows.map((row, i) => (i === index ? { ...row, ...next } : row)) })
-  }
+  const title = data.path === "else" ? "Else" : data.type === "approval" ? "Approval" : data.type === "loop" ? "Loop" : "Action"
   return (
     <>
-      <h2 className="h5">{data.path === "else" ? "Else" : data.type === "approval" ? "Approval" : "Action"}</h2>
+      <h2 className="h5">{title}</h2>
       <Field label="Type">
-        <select value={data.type} onChange={(event) => patch({ type: event.target.value })}>
+        <select
+          value={data.type}
+          onChange={(event) => {
+            const type = event.target.value
+            const next = { type }
+            if (type === "loop") {
+              next.object = data.object || source || ""
+              next.limit = data.limit || "25"
+              next.where = data.where || []
+              next.steps = data.steps?.length ? data.steps : [{ type: "update", object: "", url: "", user: "", recordMode: "", recordField: "", rows: [] }]
+            }
+            patch(next)
+          }}
+        >
           {actionTypes.map((type) => <option key={type}>{type}</option>)}
         </select>
       </Field>
+      {data.type === "loop" ? (
+        <LoopFields data={data} objects={objects} onChange={patch} />
+      ) : (
+        <ActionFields data={data} objects={objects} source={source} onChange={patch} />
+      )}
+      <Button type="button" variant="secondary" onClick={onDelete}>Delete step</Button>
+    </>
+  )
+}
+
+function LoopFields({ data, objects, onChange }) {
+  const where = data.where || []
+  const steps = data.steps || []
+  function patchWhere(index, next) {
+    onChange({ where: where.map((row, i) => (i === index ? { ...row, ...next } : row)) })
+  }
+  function patchStep(index, next) {
+    onChange({ steps: steps.map((step, i) => (i === index ? next : step)) })
+  }
+  return (
+    <>
+      <Field label="Object">
+        <select value={data.object || ""} onChange={(event) => onChange({ object: event.target.value })}>
+          <option value="">Choose</option>
+          {objects.map((object) => <option key={object.name} value={object.name}>{object.label}</option>)}
+        </select>
+      </Field>
+      <Field label="Limit">
+        <input value={data.limit ?? "25"} onChange={(event) => onChange({ limit: event.target.value })} />
+      </Field>
+      {where.map((row, index) => (
+        <div className="row g-2 mb-2" key={index}>
+          <div className="col-6 col-md">
+            <input className="form-control" aria-label="Filter field" value={row.field} onChange={(event) => patchWhere(index, { field: event.target.value })} placeholder="field" />
+          </div>
+          <div className="col-6 col-md">
+            <select className="form-select" aria-label="Filter operator" value={row.op} onChange={(event) => patchWhere(index, { op: event.target.value })}>
+              {operators.map((op) => <option key={op}>{op}</option>)}
+            </select>
+          </div>
+          <div className="col-6 col-md">
+            <select className="form-select" aria-label="Filter mode" value={row.mode} onChange={(event) => patchWhere(index, { mode: event.target.value })}>
+              <option value="literal">Literal</option>
+              <option value="field">Field on the triggering record</option>
+              <option value="record">Triggering record</option>
+            </select>
+          </div>
+          {row.mode !== "record" && (
+            <div className="col-6 col-md">
+              <input className="form-control" aria-label="Filter value" value={row.value} onChange={(event) => patchWhere(index, { value: event.target.value })} placeholder={row.mode === "field" ? "field" : "value"} />
+            </div>
+          )}
+        </div>
+      ))}
+      <Button type="button" variant="secondary" onClick={() => onChange({ where: [...where, { field: "", op: "eq", mode: "literal", value: "" }] })}>Add filter</Button>
+      {steps.map((step, index) => (
+        <div className="border rounded p-2 mb-2" key={index}>
+          <ActionFields
+            data={step}
+            objects={objects}
+            source={data.object}
+            nested
+            onChange={(next) => patchStep(index, next)}
+          />
+          <Button type="button" variant="secondary" onClick={() => onChange({ steps: steps.filter((_, i) => i !== index) })}>Remove action</Button>
+        </div>
+      ))}
+      <Button type="button" variant="secondary" onClick={() => onChange({ steps: [...steps, { type: "update", object: "", url: "", user: "", recordMode: "", recordField: "", rows: [] }] })}>Add action in loop</Button>
+    </>
+  )
+}
+
+function ActionFields({ data, objects, source, onChange, nested = false }) {
+  const types = nested ? stepTypes : actionTypes.filter((type) => type !== "loop")
+  function patch(next) {
+    onChange({ ...data, ...next })
+  }
+  function patchRow(index, next) {
+    patch({ rows: (data.rows || []).map((row, i) => (i === index ? { ...row, ...next } : row)) })
+  }
+  const rows = data.rows || []
+  return (
+    <>
+      {nested && (
+        <Field label="Type">
+          <select value={data.type} onChange={(event) => patch({ type: event.target.value })}>
+            {types.map((type) => <option key={type}>{type}</option>)}
+          </select>
+        </Field>
+      )}
       {data.type === "approval" ? (
         <Field label="User">
           <input type="email" value={data.user || ""} onChange={(event) => patch({ user: event.target.value })} placeholder="member@example.com" />
         </Field>
       ) : data.type === "http" ? (
         <Field label="URL">
-          <input value={data.url} onChange={(event) => patch({ url: event.target.value })} />
+          <input value={data.url || ""} onChange={(event) => patch({ url: event.target.value })} />
         </Field>
       ) : (
         <Field label="Object">
-          <select value={data.object} onChange={(event) => patch({ object: event.target.value })}>
+          <select value={data.object || ""} onChange={(event) => patch({ object: event.target.value })}>
             <option value="">{source ? `This ${source}` : "Choose"}</option>
             {objects.map((object) => <option key={object.name} value={object.name}>{object.label}</option>)}
           </select>
@@ -436,17 +549,17 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
             value={data.recordMode === "field" ? "field" : ""}
             onChange={(event) => patch({ recordMode: event.target.value })}
           >
-            <option value="">The record that triggered this flow</option>
+            <option value="">{nested ? "This record" : "The record that triggered this flow"}</option>
             <option value="field">The id stored in a field</option>
           </select>
         </Field>
       )}
       {data.recordMode === "field" && data.type !== "approval" && (
-        <Field label="Field on the triggering record">
-          <input value={data.recordField} onChange={(event) => patch({ recordField: event.target.value })} />
+        <Field label={nested ? "Field on this record" : "Field on the triggering record"}>
+          <input value={data.recordField || ""} onChange={(event) => patch({ recordField: event.target.value })} />
         </Field>
       )}
-      {data.type !== "delete" && data.type !== "approval" && data.rows.map((row, index) => (
+      {data.type !== "delete" && data.type !== "approval" && rows.map((row, index) => (
         <div className="row g-2 mb-2" key={index}>
           <div className="col-12 col-md">
             <input className="form-control" aria-label="Value field" value={row.field} onChange={(event) => patchRow(index, { field: event.target.value })} placeholder="field" />
@@ -466,9 +579,8 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
         </div>
       ))}
       {data.type !== "delete" && data.type !== "approval" && (
-        <Button type="button" variant="secondary" onClick={() => patch({ rows: [...data.rows, { field: "", mode: "literal", value: "" }] })}>Add value</Button>
+        <Button type="button" variant="secondary" onClick={() => patch({ rows: [...rows, { field: "", mode: "literal", value: "" }] })}>Add value</Button>
       )}
-      <Button type="button" variant="secondary" onClick={onDelete}>Delete step</Button>
     </>
   )
 }
@@ -499,15 +611,19 @@ function ConditionNode({ data }) {
 }
 
 function ActionNode({ data }) {
-  const detail = data.type === "http" ? data.url || "URL" : data.type === "approval" ? data.user || "User" : data.object || "This record"
+  const loop = data.type === "loop"
+  const detail = loop
+    ? `${data.object || "Object"} · up to ${data.limit || 25}`
+    : data.type === "http" ? data.url || "URL" : data.type === "approval" ? data.user || "User" : data.object || "This record"
   const other = data.path === "else"
   const approval = !other && data.type === "approval"
   const className = other ? "flow-node else" : approval ? "flow-node approval" : "flow-node action"
+  const kind = other ? "Else" : approval ? "Approval" : loop ? "Loop" : "Action"
   return (
     <div className={className}>
       <Handle type="target" position={Position.Top} />
-      <div className="flow-kind">{other ? "Else" : approval ? "Approval" : "Action"}</div>
-      <strong>{data.type}</strong>
+      <div className="flow-kind">{kind}</div>
+      <strong>{loop ? "loop" : data.type}</strong>
       <div>{detail}</div>
       <Handle type="source" position={Position.Bottom} />
     </div>

@@ -241,6 +241,103 @@ test("a schedule rejects else", () => {
   )
 })
 
+test("a loop action round-trips through the canvas", () => {
+  const taskFields = [
+    { name: "name", type: "text" },
+    { name: "status", type: "text" },
+    { name: "company", type: "relation" },
+  ]
+  const lookup = {
+    company: fields,
+    task: taskFields,
+    note: [{ name: "name", type: "text" }],
+  }
+  const workflow = {
+    label: "Close tasks",
+    event: "record.created",
+    object: "company",
+    conditions: [{ field: "name", op: "eq", value: "Acme" }],
+    actions: [{
+      type: "loop",
+      object: "task",
+      limit: 2,
+      where: [
+        { field: "status", op: "eq", value: "open" },
+        { field: "company", op: "eq", value: { record: true } },
+      ],
+      actions: [
+        { type: "update", data: { status: "done" } },
+        { type: "create", object: "note", data: { name: { field: "name" } } },
+      ],
+    }],
+    else: [{
+      type: "loop",
+      object: "task",
+      limit: 10,
+      actions: [{ type: "delete" }],
+    }],
+  }
+  const graph = workflowToGraph(workflow)
+  const back = graphToWorkflow(graph.nodes, graph.edges, { object: "company", fields, fieldsByObject: lookup })
+  assert.deepEqual(back.conditions, workflow.conditions)
+  assert.deepEqual(back.actions, workflow.actions)
+  assert.deepEqual(back.else, workflow.else)
+  const open = workflowToGraph({
+    label: "All",
+    actions: [{ type: "loop", object: "task", actions: [{ type: "delete" }] }],
+  })
+  const saved = graphToWorkflow(open.nodes, open.edges, { object: "company", fields, fieldsByObject: lookup })
+  assert.equal(saved.actions[0].limit, 25)
+  assert.equal(saved.actions[0].where, undefined)
+})
+
+test("a loop stays on a record workflow and inside its own limit", () => {
+  const lookup = { task: [{ name: "name", type: "text" }] }
+  const schedule = workflowToGraph({
+    label: "Nightly",
+    every: "1d",
+    actions: [{ type: "loop", object: "task", limit: 25, actions: [{ type: "delete" }] }],
+  })
+  assert.throws(
+    () => graphToWorkflow(schedule.nodes, schedule.edges, { every: "1d", fields: [], fieldsByObject: lookup }),
+    /a schedule can create a record or POST JSON/,
+  )
+  const graph = workflowToGraph({
+    label: "Close",
+    actions: [{ type: "loop", object: "task", limit: 2, actions: [{ type: "delete" }] }],
+  })
+  const node = graph.nodes.find((item) => item.id === "action-0")
+  node.data.steps = [{ type: "loop", object: "task", steps: [{ type: "delete" }] }]
+  assert.throws(
+    () => graphToWorkflow(graph.nodes, graph.edges, { fieldsByObject: lookup }),
+    /invalid action/,
+  )
+  node.data.steps = [{ type: "approval", user: "mia@example.com" }]
+  assert.throws(
+    () => graphToWorkflow(graph.nodes, graph.edges, { fieldsByObject: lookup }),
+    /invalid action/,
+  )
+  node.data.steps = []
+  assert.throws(
+    () => graphToWorkflow(graph.nodes, graph.edges, { fieldsByObject: lookup }),
+    /actions are required/,
+  )
+  node.data.steps = [{ type: "delete" }]
+  node.data.object = ""
+  assert.throws(
+    () => graphToWorkflow(graph.nodes, graph.edges, { fieldsByObject: lookup }),
+    /a loop needs an object/,
+  )
+  node.data.object = "task"
+  for (const limit of ["0", "51", "1.5"]) {
+    node.data.limit = limit
+    assert.throws(
+      () => graphToWorkflow(graph.nodes, graph.edges, { fieldsByObject: lookup }),
+      /invalid limit/,
+    )
+  }
+})
+
 function actionData(type) {
   return { type, object: "", url: "https://example.com/hook", recordMode: "", recordField: "", rows: [] }
 }

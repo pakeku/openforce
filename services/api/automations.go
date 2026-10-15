@@ -24,18 +24,26 @@ type condition struct {
 	Value any    `json:"value"`
 }
 
+const (
+	loopDefaultLimit = 25
+	loopMaxLimit     = 50
+)
+
 type automationAction struct {
-	Type    string         `json:"type"`
-	Name    string         `json:"name,omitempty"`
-	Object  string         `json:"object,omitempty"`
-	Record  any            `json:"record,omitempty"`
-	Data    map[string]any `json:"data,omitempty"`
-	URL     string         `json:"url,omitempty"`
-	User    string         `json:"user,omitempty"`
-	Title   any            `json:"title,omitempty"`
-	Body    any            `json:"body,omitempty"`
-	To      any            `json:"to,omitempty"`
-	Subject any            `json:"subject,omitempty"`
+	Type    string             `json:"type"`
+	Name    string             `json:"name,omitempty"`
+	Object  string             `json:"object,omitempty"`
+	Record  any                `json:"record,omitempty"`
+	Data    map[string]any     `json:"data,omitempty"`
+	URL     string             `json:"url,omitempty"`
+	User    string             `json:"user,omitempty"`
+	Title   any                `json:"title,omitempty"`
+	Body    any                `json:"body,omitempty"`
+	To      any                `json:"to,omitempty"`
+	Subject any                `json:"subject,omitempty"`
+	Limit   *int               `json:"limit,omitempty"`
+	Where   []condition        `json:"where,omitempty"`
+	Actions []automationAction `json:"actions,omitempty"`
 }
 
 type automationInput struct {
@@ -479,11 +487,17 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 		return apiErr(http.StatusBadRequest, "actions are required")
 	}
 	approvals := 0
-	for _, action := range actions {
+	for i := range actions {
+		action := actions[i]
 		if action.Type != "email" && (action.To != nil || action.Subject != nil) {
 			return apiErr(http.StatusBadRequest, "invalid action")
 		}
 		switch action.Type {
+		case "loop":
+			if err := s.validateLoop(ctx, orgID, sourceName, source, &actions[i]); err != nil {
+				return err
+			}
+			continue
 		case "http":
 			if err := validateHTTPAction(sourceName, source, action); err != nil {
 				return err
@@ -545,6 +559,73 @@ func (s *server) validateActions(ctx context.Context, orgID, sourceName string, 
 		}
 	}
 	return nil
+}
+
+func (s *server) validateLoop(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, action *automationAction) error {
+	if sourceName == "" {
+		return apiErr(http.StatusBadRequest, "invalid action")
+	}
+	if action.URL != "" || action.User != "" || action.Name != "" || action.Record != nil || len(action.Data) > 0 || action.Title != nil || action.Body != nil {
+		return apiErr(http.StatusBadRequest, "invalid action")
+	}
+	if !namePattern.MatchString(action.Object) {
+		return apiErr(http.StatusBadRequest, "invalid name")
+	}
+	if action.Limit == nil {
+		n := loopDefaultLimit
+		action.Limit = &n
+	} else if *action.Limit < 1 || *action.Limit > loopMaxLimit {
+		return apiErr(http.StatusBadRequest, "invalid limit")
+	}
+	objectID, err := s.objectByName(ctx, orgID, action.Object)
+	if err != nil {
+		return err
+	}
+	defs, err := s.fieldDefs(ctx, objectID)
+	if err != nil {
+		return err
+	}
+	byName := indexFields(defs)
+	for _, cond := range action.Where {
+		def, ok := byName[cond.Field]
+		if !ok {
+			return apiErrf(http.StatusBadRequest, "unknown field %s", cond.Field)
+		}
+		if err := validateLoopFilter(sourceName, source, def, cond); err != nil {
+			return err
+		}
+	}
+	for _, inner := range action.Actions {
+		if inner.Type == "loop" || inner.Type == "approval" {
+			return apiErr(http.StatusBadRequest, "invalid action")
+		}
+	}
+	return s.validateActions(ctx, orgID, action.Object, byName, action.Actions, false)
+}
+
+// validateLoopFilter checks a where row against the looped object.
+// A field or record reference is copied from the record that started the workflow.
+func validateLoopFilter(sourceName string, source map[string]fieldDef, def fieldDef, cond condition) error {
+	if field, ok := fieldRef(cond.Value); ok {
+		sourceDef, known := source[field]
+		if !known {
+			return apiErrf(http.StatusBadRequest, "unknown field %s", field)
+		}
+		sample, err := sampleValue(sourceDef)
+		if err != nil {
+			return err
+		}
+		cond.Value = sample
+		return validateCondition(def, cond)
+	}
+	if isRecordRef(cond.Value) {
+		if sourceName == "" {
+			return apiErr(http.StatusBadRequest, "invalid record")
+		}
+		cond.Value = uuid.NewString()
+		return validateCondition(def, cond)
+	}
+	return validateCondition(def, cond)
 }
 
 func (s *server) actionFields(ctx context.Context, orgID, sourceName string, source map[string]fieldDef, action automationAction) ([]fieldDef, error) {
@@ -990,6 +1071,10 @@ func (s *server) runActionList(ctx context.Context, a actor, eventName, sourceNa
 				return actionResult{}, err
 			}
 			result.notes = append(result.notes, note)
+		case "loop":
+			if err := s.runLoop(ctx, a, eventName, recordID, record, action, cause, &result); err != nil {
+				return actionResult{}, err
+			}
 		case "email":
 			message, err := prepareEmail(recordID, record, action)
 			if err != nil {
@@ -1028,6 +1113,98 @@ func (s *server) runAction(ctx context.Context, a actor, eventName, sourceName, 
 	default:
 		return nil, fmt.Errorf("invalid action")
 	}
+}
+
+// runLoop visits matching records oldest first. where reads the triggering record.
+// Each inner action reads the record it is visiting, and cause keeps this workflow from enqueueing itself.
+func (s *server) runLoop(ctx context.Context, a actor, eventName, triggerID string, trigger map[string]any, action automationAction, cause string, result *actionResult) error {
+	limit := loopDefaultLimit
+	if action.Limit != nil {
+		limit = *action.Limit
+	}
+	if limit < 1 || limit > loopMaxLimit {
+		return fmt.Errorf("invalid limit")
+	}
+	objectID, err := s.objectByName(ctx, a.OrgID, action.Object)
+	if err != nil {
+		return err
+	}
+	if err := s.authorize(ctx, a, objectID, false); err != nil {
+		return err
+	}
+	defs, err := s.fieldDefs(ctx, objectID)
+	if err != nil {
+		return err
+	}
+	filters, ok, err := resolveLoopFilters(action.Where, triggerID, trigger)
+	if err != nil || !ok {
+		return err
+	}
+	rows, err := s.loopRecords(ctx, a.OrgID, objectID, defs, filters, limit)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		inner, err := s.runActionList(ctx, a, eventName, action.Object, objectID, row.ID, row.Data, action.Actions, cause)
+		if err != nil {
+			return err
+		}
+		result.created = append(result.created, inner.created...)
+		result.notes = append(result.notes, inner.notes...)
+		result.emails = append(result.emails, inner.emails...)
+	}
+	return nil
+}
+
+func resolveLoopFilters(where []condition, triggerID string, trigger map[string]any) ([]condition, bool, error) {
+	out := make([]condition, 0, len(where))
+	for _, cond := range where {
+		next := cond
+		if field, ok := fieldRef(cond.Value); ok {
+			value, present := trigger[field]
+			if !present || value == nil {
+				return nil, false, nil
+			}
+			next.Value = value
+		} else if isRecordRef(cond.Value) {
+			if triggerID == "" {
+				return nil, false, fmt.Errorf("invalid record")
+			}
+			next.Value = triggerID
+		}
+		out = append(out, next)
+	}
+	return out, true, nil
+}
+
+func (s *server) loopRecords(ctx context.Context, orgID, objectID string, defs []fieldDef, where []condition, limit int) ([]recordView, error) {
+	q := listQuery{Args: []any{orgID, objectID}, Limit: limit, Order: []string{"created_at", "id"}}
+	byName := indexFields(defs)
+	for _, cond := range where {
+		if err := q.addFilter(byName, cond.Field, cond.Op, cond.Value); err != nil {
+			return nil, err
+		}
+	}
+	query, args := q.sql()
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	found := []recordView{}
+	for rows.Next() {
+		var view recordView
+		var raw []byte
+		if err := rows.Scan(&view.ID, &view.Version, &raw); err != nil {
+			return nil, err
+		}
+		view.Data, err = decodeData(raw)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, view)
+	}
+	return found, rows.Err()
 }
 
 func validateHTTPAction(sourceName string, source map[string]fieldDef, action automationAction) error {

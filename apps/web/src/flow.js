@@ -147,7 +147,7 @@ export function graphToWorkflow(nodes, edges, options = {}) {
   if (actions.length === 0) throw new Error("actions are required")
   if (every && conditions.length > 0) throw new Error("a schedule has no conditions")
   if (every && elseActions.length > 0) throw new Error("a schedule has no else")
-  const blocked = (action) => action.type === "update" || action.type === "delete"
+  const blocked = (action) => action.type === "update" || action.type === "delete" || action.type === "loop"
   if (every && (actions.some(blocked) || elseActions.some(blocked))) {
     throw new Error("a schedule can create a record or POST JSON")
   }
@@ -335,24 +335,34 @@ function reaches(edges, from, to) {
 }
 
 function actionToNodeData(action) {
+  if (action.type === "loop") {
+    return {
+      type: "loop",
+      object: action.object || "",
+      limit: action.limit == null || action.limit === "" ? "25" : String(action.limit),
+      where: (action.where || []).map(whereToRow),
+      steps: (action.actions || []).map(actionToNodeData),
+      url: "",
+      user: "",
+      recordMode: "",
+      recordField: "",
+      rows: [],
+    }
+  }
   const rows = []
   for (const [field, value] of Object.entries(action.data || {})) {
-    if (value && typeof value === "object" && Object.keys(value).length === 1 && typeof value.field === "string") {
-      rows.push({ field, mode: "field", value: value.field })
-    } else if (value && typeof value === "object" && value.record === true) {
-      rows.push({ field, mode: "record", value: "" })
-    } else {
-      rows.push({ field, mode: "literal", value: value == null ? "" : String(value) })
-    }
+    const ref = refOf(value)
+    if (ref.mode === "field") rows.push({ field, mode: "field", value: ref.value })
+    else if (ref.mode === "record") rows.push({ field, mode: "record", value: "" })
+    else rows.push({ field, mode: "literal", value: value == null ? "" : String(value) })
   }
   let recordMode = ""
   let recordField = ""
-  if (action.record && typeof action.record === "object") {
-    if (action.record.record === true) recordMode = "record"
-    else if (typeof action.record.field === "string") {
-      recordMode = "field"
-      recordField = action.record.field
-    }
+  const record = refOf(action.record)
+  if (record.mode === "record") recordMode = "record"
+  else if (record.mode === "field") {
+    recordMode = "field"
+    recordField = record.value
   }
   return {
     type: action.type,
@@ -366,6 +376,26 @@ function actionToNodeData(action) {
 }
 
 function actionFromNode(data, sourceObject, fieldsByObject) {
+  if (data.type === "loop") return loopFromNode(data, fieldsByObject)
+  return simpleAction(data, sourceObject, fieldsByObject)
+}
+
+function loopFromNode(data, fieldsByObject) {
+  const object = typeof data.object === "string" ? data.object.trim() : ""
+  if (!object) throw new Error("a loop needs an object")
+  const steps = data.steps || []
+  if (steps.length === 0) throw new Error("actions are required")
+  const actions = steps.map((step) => {
+    if (step.type === "loop" || step.type === "approval") throw new Error("invalid action")
+    return simpleAction(step, object, fieldsByObject)
+  })
+  const where = whereFromRows(data.where || [], object, fieldsByObject)
+  const action = { type: "loop", object, limit: loopLimit(data.limit), actions }
+  if (where.length) action.where = where
+  return action
+}
+
+function simpleAction(data, sourceObject, fieldsByObject) {
   const target = data.object || sourceObject
   const lookup = (field) => (fieldsByObject[target] || []).find((item) => item.name === field)?.type
   if (data.type === "http") {
@@ -394,6 +424,47 @@ function actionFromNode(data, sourceObject, fieldsByObject) {
   if (data.type === "update" && !(data.rows?.length)) throw new Error("data is required")
   if (data.rows?.length) action.data = objectFromRows(data.rows, lookup)
   return action
+}
+
+function whereToRow(cond) {
+  const ref = refOf(cond.value)
+  if (ref.mode === "field" || ref.mode === "record") {
+    return { field: cond.field || "", op: cond.op || "eq", mode: ref.mode, value: ref.mode === "field" ? ref.value : "" }
+  }
+  return { field: cond.field || "", op: cond.op || "eq", mode: "literal", value: cond.value == null ? "" : String(cond.value) }
+}
+
+function whereFromRows(rows, object, fieldsByObject) {
+  const fields = fieldsByObject[object] || []
+  return rows.map((row) => {
+    if (!row.field) throw new Error("a condition needs a field")
+    if (!row.op) throw new Error("a condition needs an operator")
+    if (row.mode === "record") return { field: row.field, op: row.op, value: { record: true } }
+    if (row.mode === "field") {
+      if (!row.value) throw new Error("a condition needs a field")
+      return { field: row.field, op: row.op, value: { field: row.value } }
+    }
+    const type = fields.find((field) => field.name === row.field)?.type
+    return { field: row.field, op: row.op, value: literal(row.value ?? "", type) }
+  })
+}
+
+function loopLimit(raw) {
+  if (raw == null || raw === "") return 25
+  const text = String(raw)
+  if (!/^[1-9]\d*$/.test(text)) throw new Error("invalid limit")
+  const limit = Number(text)
+  if (limit < 1 || limit > 50) throw new Error("invalid limit")
+  return limit
+}
+
+function refOf(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { mode: "" }
+  const keys = Object.keys(value)
+  if (keys.length !== 1) return { mode: "" }
+  if (typeof value.field === "string") return { mode: "field", value: value.field }
+  if (value.record === true) return { mode: "record" }
+  return { mode: "" }
 }
 
 function objectFromRows(rows, lookup) {
