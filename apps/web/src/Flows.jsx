@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Background, Controls, Handle, MiniMap, Position, ReactFlow, applyEdgeChanges, applyNodeChanges } from "@xyflow/react"
 import { api } from "./api.js"
-import { Button, Notice } from "./ui.jsx"
+import { Button, Field, List, ListButton, Meta, Notice, Page } from "./ui.jsx"
 import { appendElse, appendNode, connectionAllowed, graphToWorkflow, insertBefore, removeNode, workflowToGraph } from "./flow.js"
 
 const events = ["record.created", "record.updated", "record.deleted"]
@@ -249,24 +249,18 @@ export function Flows({ token }) {
 
   if (!editor) {
     return (
-      <main>
-        <div className="title-row">
-          <h1>Flows</h1>
-          <Button onClick={openDraft}>New flow</Button>
-        </div>
+      <Page title="Flows" actions={<Button type="button" onClick={openDraft}>New flow</Button>}>
         <Notice tone="error">{error}</Notice>
         {automations.length === 0 && <Notice>No flows yet.</Notice>}
-        <ul className="object-list">
+        <List>
           {automations.map((flow) => (
-            <li key={flow.id}>
-              <Button onClick={() => openSaved(flow.name)}>
-                <strong>{flow.label}</strong>
-                <span>{flow.every ? `every ${flow.every}` : `${flow.event} · ${flow.object}`}</span>
-              </Button>
-            </li>
+            <ListButton key={flow.id} onClick={() => openSaved(flow.name)}>
+              <strong>{flow.label}</strong>
+              <Meta>{flow.every ? `every ${flow.every}` : `${flow.event} · ${flow.object}`}</Meta>
+            </ListButton>
           ))}
-        </ul>
-      </main>
+        </List>
+      </Page>
     )
   }
 
@@ -274,12 +268,16 @@ export function Flows({ token }) {
   const schedule = editor.mode === "schedule"
 
   return (
-    <main>
-      <div className="title-row">
-        <Button variant="text" onClick={() => { setEditor(null); setError("") }}>Flows</Button>
-        <h1>{selected?.data.label || editor.name || "New flow"}</h1>
-        {editor.saved && <span className="version">version {editor.version}</span>}
-      </div>
+    <>
+      <Page
+        title={selected?.data.label || editor.name || "New flow"}
+        actions={(
+          <>
+            <Button type="button" variant="text" onClick={() => { setEditor(null); setError("") }}>All flows</Button>
+            {editor.saved && <span className="text-secondary">version {editor.version}</span>}
+          </>
+        )}
+      />
       <Notice tone="error">{error}</Notice>
       <div className="flow-layout">
         <div className="flow-canvas">
@@ -302,50 +300,44 @@ export function Flows({ token }) {
             <MiniMap />
           </ReactFlow>
         </div>
-        <form className="panel" onSubmit={save}>
+        <form className="card card-body" onSubmit={save}>
           <Notice>Conditions run first. A match follows the actions. One approval on that path waits for a person. A miss follows the other path.</Notice>
           {selected?.type === "trigger" && (
             <>
-              <h2>Trigger</h2>
+              <h2 className="h5">Trigger</h2>
               {!editor.saved && (
-                <label>
-                  Name
+                <Field label="Name">
                   <input value={editor.name} onChange={(event) => patchEditor({ name: event.target.value })} required />
-                </label>
+                </Field>
               )}
-              <label>
-                Label
+              <Field label="Label">
                 <input value={selected.data.label} onChange={(event) => patchNode("trigger", { label: event.target.value })} required />
-              </label>
+              </Field>
               {!editor.saved && (
-                <label>
-                  Runs
+                <Field label="Runs">
                   <select value={editor.mode} onChange={(event) => patchEditor({ mode: event.target.value })}>
                     <option value="event">When a record changes</option>
                     <option value="schedule">On a schedule</option>
                   </select>
-                </label>
+                </Field>
               )}
               {editor.mode === "event" ? (
                 <>
-                  <label>
-                    Event
+                  <Field label="Event">
                     <select value={editor.event} disabled={editor.saved} onChange={(event) => patchEditor({ event: event.target.value })}>
                       {events.map((name) => <option key={name}>{name}</option>)}
                     </select>
-                  </label>
-                  <label>
-                    Object
+                  </Field>
+                  <Field label="Object">
                     <select value={editor.object} disabled={editor.saved} onChange={(event) => patchEditor({ object: event.target.value })}>
                       {objects.map((object) => <option key={object.name} value={object.name}>{object.label}</option>)}
                     </select>
-                  </label>
+                  </Field>
                 </>
               ) : (
-                <label>
-                  Every
+                <Field label="Every">
                   <input value={editor.every} disabled={editor.saved} onChange={(event) => patchEditor({ every: event.target.value })} placeholder="15m" />
-                </label>
+                </Field>
               )}
             </>
           )}
@@ -355,7 +347,7 @@ export function Flows({ token }) {
           {selected?.type === "action" && (
             <ActionForm node={selected} objects={objects} source={editor.object} onChange={(data) => patchNode(selected.id, data)} onDelete={() => deleteStep(selected.id)} />
           )}
-          <div className="actions">
+          <div className="d-flex flex-wrap gap-2 mb-3">
             {!schedule && <Button type="button" variant="secondary" onClick={() => addStep("condition")}>Add condition</Button>}
             <Button type="button" variant="secondary" onClick={() => addStep("action")}>Add action</Button>
             <Button type="button" variant="secondary" onClick={() => addStep("approval")}>Add approval</Button>
@@ -365,42 +357,42 @@ export function Flows({ token }) {
           {editor.saved && <Button type="button" variant="secondary" onClick={removeFlow}>Delete flow</Button>}
           {editor.saved && (
             <>
-              <h2>Executions</h2>
+              <h2 className="h5 mt-3">Executions</h2>
               {executions.length === 0 && <Notice>None yet.</Notice>}
-              <ul className="executions">
+              <List>
                 {executions.map((item) => (
-                  <li key={item.id}><span>{item.status}{item.path ? ` · ${item.path}` : ""}</span><span className="empty">{item.created_at}</span></li>
+                  <div key={item.id} className="list-group-item d-flex justify-content-between gap-2">
+                    <span>{item.status}{item.path ? ` · ${item.path}` : ""}</span>
+                    <Meta>{item.created_at}</Meta>
+                  </div>
                 ))}
-              </ul>
+              </List>
             </>
           )}
         </form>
       </div>
-    </main>
+    </>
   )
 }
 
 function ConditionForm({ node, fields, onChange, onDelete }) {
   return (
     <>
-      <h2>Condition</h2>
-      <label>
-        Field
+      <h2 className="h5">Condition</h2>
+      <Field label="Field">
         <input list="flow-fields" value={node.data.field} onChange={(event) => onChange({ field: event.target.value })} />
-      </label>
+      </Field>
       <datalist id="flow-fields">
         {fields.map((field) => <option key={field.name} value={field.name} />)}
       </datalist>
-      <label>
-        Operator
+      <Field label="Operator">
         <select value={node.data.op} onChange={(event) => onChange({ op: event.target.value })}>
           {operators.map((op) => <option key={op}>{op}</option>)}
         </select>
-      </label>
-      <label>
-        Value
+      </Field>
+      <Field label="Value">
         <input value={node.data.value} onChange={(event) => onChange({ value: event.target.value })} />
-      </label>
+      </Field>
       <Button type="button" variant="secondary" onClick={onDelete}>Delete step</Button>
     </>
   )
@@ -416,35 +408,30 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
   }
   return (
     <>
-      <h2>{data.path === "else" ? "Else" : data.type === "approval" ? "Approval" : "Action"}</h2>
-      <label>
-        Type
+      <h2 className="h5">{data.path === "else" ? "Else" : data.type === "approval" ? "Approval" : "Action"}</h2>
+      <Field label="Type">
         <select value={data.type} onChange={(event) => patch({ type: event.target.value })}>
           {actionTypes.map((type) => <option key={type}>{type}</option>)}
         </select>
-      </label>
+      </Field>
       {data.type === "approval" ? (
-        <label>
-          User
+        <Field label="User">
           <input type="email" value={data.user || ""} onChange={(event) => patch({ user: event.target.value })} placeholder="member@example.com" />
-        </label>
+        </Field>
       ) : data.type === "http" ? (
-        <label>
-          URL
+        <Field label="URL">
           <input value={data.url} onChange={(event) => patch({ url: event.target.value })} />
-        </label>
+        </Field>
       ) : (
-        <label>
-          Object
+        <Field label="Object">
           <select value={data.object} onChange={(event) => patch({ object: event.target.value })}>
             <option value="">{source ? `This ${source}` : "Choose"}</option>
             {objects.map((object) => <option key={object.name} value={object.name}>{object.label}</option>)}
           </select>
-        </label>
+        </Field>
       )}
       {data.type !== "http" && data.type !== "create" && data.type !== "approval" && (
-        <label>
-          Record
+        <Field label="Record">
           <select
             value={data.recordMode === "field" ? "field" : ""}
             onChange={(event) => patch({ recordMode: event.target.value })}
@@ -452,24 +439,29 @@ function ActionForm({ node, objects, source, onChange, onDelete }) {
             <option value="">The record that triggered this flow</option>
             <option value="field">The id stored in a field</option>
           </select>
-        </label>
+        </Field>
       )}
       {data.recordMode === "field" && data.type !== "approval" && (
-        <label>
-          Field on the triggering record
+        <Field label="Field on the triggering record">
           <input value={data.recordField} onChange={(event) => patch({ recordField: event.target.value })} />
-        </label>
+        </Field>
       )}
       {data.type !== "delete" && data.type !== "approval" && data.rows.map((row, index) => (
-        <div className="field-row" key={index}>
-          <input aria-label="Value field" value={row.field} onChange={(event) => patchRow(index, { field: event.target.value })} placeholder="field" />
-          <select aria-label="Value mode" value={row.mode} onChange={(event) => patchRow(index, { mode: event.target.value })}>
-            <option value="literal">Literal</option>
-            <option value="field">Copy field</option>
-            <option value="record">Record id</option>
-          </select>
+        <div className="row g-2 mb-2" key={index}>
+          <div className="col-12 col-md">
+            <input className="form-control" aria-label="Value field" value={row.field} onChange={(event) => patchRow(index, { field: event.target.value })} placeholder="field" />
+          </div>
+          <div className="col-12 col-md">
+            <select className="form-select" aria-label="Value mode" value={row.mode} onChange={(event) => patchRow(index, { mode: event.target.value })}>
+              <option value="literal">Literal</option>
+              <option value="field">Copy field</option>
+              <option value="record">Record id</option>
+            </select>
+          </div>
           {row.mode !== "record" && (
-            <input aria-label="Value" value={row.value} onChange={(event) => patchRow(index, { value: event.target.value })} />
+            <div className="col-12 col-md">
+              <input className="form-control" aria-label="Value" value={row.value} onChange={(event) => patchRow(index, { value: event.target.value })} />
+            </div>
           )}
         </div>
       ))}

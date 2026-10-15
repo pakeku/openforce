@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { api } from "./api.js"
-import { Notice, Page } from "./ui.jsx"
+import { List, ListItem, Meta, Notice, Page } from "./ui.jsx"
 
 export function Notifications({ token }) {
   const [rows, setRows] = useState([])
@@ -23,17 +23,15 @@ export function Notifications({ token }) {
     <Page title="Notifications">
       <Notice tone="error">{error}</Notice>
       {rows.length === 0 && <Notice>No notifications.</Notice>}
-      <ul className="notification-list">
+      <List>
         {rows.map((row) => (
-          <li key={row.id} className="notification-row">
-            <div>
-              <strong>{row.title}</strong>
-              <span>{row.body}</span>
-              <span>{row.created_at}</span>
-            </div>
-          </li>
+          <ListItem
+            key={row.id}
+            title={row.title}
+            meta={<><Meta>{row.body}</Meta><Meta>{row.created_at}</Meta></>}
+          />
         ))}
-      </ul>
+      </List>
     </Page>
   )
 }

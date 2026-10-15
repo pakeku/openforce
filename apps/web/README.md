@@ -1,6 +1,6 @@
 # Openforce web
 
-The UI runtime. It reads object definitions, views, layouts, and pages from the kernel API and renders a table and a record form.
+The UI runtime. It reads object definitions, views, layouts, and pages from the kernel API and renders a table and a record form. Screens are Bootstrap components in `src/ui.jsx`, and each screen has its own URL.
 
 ```text
 npm install

@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { api } from "./api.js"
-import { Actions, Button, Field, Notice, Page, Panel } from "./ui.jsx"
+import { objectRecordPath, objectTablePath } from "./routes.js"
+import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
 
-export function TablePage({ token, object, open }) {
+export function TablePage({ token, object }) {
+  const navigate = useNavigate()
   const [columns, setColumns] = useState([])
   const [records, setRecords] = useState([])
   const [error, setError] = useState("")
@@ -32,26 +35,26 @@ export function TablePage({ token, object, open }) {
   }
 
   return (
-    <Page title={object} actions={<Button onClick={() => open({ page: "record", object })}>New record</Button>}>
+    <Page title={object} actions={<Button type="button" onClick={() => navigate(objectRecordPath(object))}>New record</Button>}>
       <Notice tone="error">{error}</Notice>
-      <form className="filters" onSubmit={applyFilter}>
-        <input value={field} onChange={(event) => setField(event.target.value)} aria-label="Filter field" />
-        <select value={operator} onChange={(event) => setOperator(event.target.value)} aria-label="Filter operator">
+      <form className="d-flex flex-wrap gap-2 align-items-center mb-3" onSubmit={applyFilter}>
+        <input className="form-control of-filter" value={field} onChange={(event) => setField(event.target.value)} aria-label="Filter field" />
+        <select className="form-select of-filter" value={operator} onChange={(event) => setOperator(event.target.value)} aria-label="Filter operator">
           <option value="contains">contains</option>
           <option value="eq">equals</option>
           <option value="gte">at least</option>
         </select>
-        <input value={value} onChange={(event) => setValue(event.target.value)} aria-label="Filter value" />
+        <input className="form-control of-filter" value={value} onChange={(event) => setValue(event.target.value)} aria-label="Filter value" />
         <Button>Filter</Button>
       </form>
-      <div className="table-wrap">
-        <table>
+      <div className="table-responsive card">
+        <table className="table table-hover mb-0">
           <thead>
             <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
           </thead>
           <tbody>
             {records.map((record) => (
-              <tr key={record.id} onClick={() => open({ page: "record", object, id: record.id })}>
+              <tr key={record.id} onClick={() => navigate(objectRecordPath(object, record.id))}>
                 {columns.map((column) => <td key={column}>{show(record.data[column])}</td>)}
               </tr>
             ))}
@@ -63,7 +66,8 @@ export function TablePage({ token, object, open }) {
   )
 }
 
-export function RecordPage({ token, object, id, open }) {
+export function RecordPage({ token, object, id }) {
+  const navigate = useNavigate()
   const [fields, setFields] = useState([])
   const [layout, setLayout] = useState([])
   const [relationships, setRelationships] = useState([])
@@ -127,7 +131,7 @@ export function RecordPage({ token, object, id, open }) {
       const saved = id
         ? await api(token, "PATCH", `/api/objects/${object}/${id}`, { version, data: payload })
         : await api(token, "POST", `/api/objects/${object}`, payload)
-      open({ page: "record", object, id: saved.id })
+      navigate(objectRecordPath(object, saved.id))
       setVersion(saved.version)
       setData(saved.data)
     } catch (err) {
@@ -139,7 +143,7 @@ export function RecordPage({ token, object, id, open }) {
     setError("")
     try {
       await api(token, "DELETE", `/api/objects/${object}/${id}`)
-      open({ page: "table", object })
+      navigate(objectTablePath(object))
     } catch (err) {
       setError(err.message)
     }
@@ -148,7 +152,7 @@ export function RecordPage({ token, object, id, open }) {
   return (
     <Page
       title={data.name || (id ? object : `New ${object}`)}
-      actions={<Button variant="secondary" onClick={() => open({ page: "table", object })}>Back</Button>}
+      actions={<Button type="button" variant="secondary" onClick={() => navigate(objectTablePath(object))}>Back</Button>}
     >
       <Notice tone="error">{error}</Notice>
       <Panel onSubmit={save}>
@@ -157,59 +161,57 @@ export function RecordPage({ token, object, id, open }) {
           if (!field) return null
           const link = relationships.find((item) => item.name === name && data[name])
           return (
-            <Field key={name} label={`${field.name}${field.required ? " *" : ""}`}>
-              <FieldInput field={field} value={data[name]} onChange={(value) => setValue(name, value)} />
+            <div key={name}>
+              <Field label={`${field.name}${field.required ? " *" : ""}`}>
+                <FieldInput field={field} value={data[name]} onChange={(value) => setValue(name, value)} />
+              </Field>
               {link && (
-                <Button type="button" variant="text" onClick={() => open({ page: "record", object: link.to, id: data[name] })}>
-                  Open {link.to}
-                </Button>
+                <div className="mb-3">
+                  <Button type="button" variant="text" onClick={() => navigate(objectRecordPath(link.to, data[name]))}>
+                    Open {link.to}
+                  </Button>
+                </div>
               )}
-            </Field>
+            </div>
           )
         })}
         <Actions>
           <Button>{id ? "Save" : "Create"}</Button>
           {id && <Button type="button" variant="secondary" onClick={remove}>Delete</Button>}
-          {id && <span className="version">Version {version}</span>}
+          {id && <span className="text-secondary">Version {version}</span>}
         </Actions>
       </Panel>
       {related.map((group) => (
-        <section key={group.name}>
-          <h2>{group.name}</h2>
-          <ul className="object-list">
+        <Panel key={group.name} title={group.name}>
+          <List>
             {group.records.map((record) => (
-              <li key={record.id}>
-                <Button onClick={() => open({ page: "record", object: group.to, id: record.id })}>
-                  <strong>{record.data.name || record.id}</strong>
-                  <span>{group.to}</span>
-                </Button>
-              </li>
+              <ListButton key={record.id} onClick={() => navigate(objectRecordPath(group.to, record.id))}>
+                <strong>{record.data.name || record.id}</strong>
+                <Meta>{group.to}</Meta>
+              </ListButton>
             ))}
-          </ul>
+          </List>
           <Notice>{group.records.length === 0 ? "None yet." : ""}</Notice>
-        </section>
+        </Panel>
       ))}
       {id && (
-        <section>
-          <h2>Activity</h2>
+        <Panel title="Activity">
           {entries.length === 0 && <Notice>No activity yet.</Notice>}
-          <ul className="activity-list">
+          <List>
             {entries.map((entry) => (
-              <li key={entry.id} className="activity-row">
-                <div>
-                  <strong>{entry.name}</strong>
-                  {(entry.field != null || entry.before != null || entry.after != null) && (
-                    <span>{entry.field != null ? `${entry.field}: ` : ""}{auditValue(entry.before)} → {auditValue(entry.after)}</span>
-                  )}
-                  <span>{entry.source}</span>
-                  <span>{entry.actor_id}</span>
-                  <span>{entry.event_id}</span>
-                  <span>{entry.created_at}</span>
-                </div>
-              </li>
+              <div key={entry.id} className="list-group-item">
+                <div className="fw-semibold">{entry.name}</div>
+                {(entry.field != null || entry.before != null || entry.after != null) && (
+                  <Meta>{entry.field != null ? `${entry.field}: ` : ""}{auditValue(entry.before)} → {auditValue(entry.after)}</Meta>
+                )}
+                <Meta>{entry.source}</Meta>
+                <Meta>{entry.actor_id}</Meta>
+                <Meta>{entry.event_id}</Meta>
+                <Meta>{entry.created_at}</Meta>
+              </div>
             ))}
-          </ul>
-        </section>
+          </List>
+        </Panel>
       )}
     </Page>
   )
@@ -217,11 +219,11 @@ export function RecordPage({ token, object, id, open }) {
 
 function FieldInput({ field, value, onChange }) {
   if (field.type === "boolean") {
-    return <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
+    return <input className="form-check-input" type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
   }
   if (field.type === "enum") {
     return (
-      <select value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
+      <select className="form-select" value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
         <option value=""></option>
         {(field.options || []).map((option) => <option key={option}>{option}</option>)}
       </select>
@@ -230,6 +232,7 @@ function FieldInput({ field, value, onChange }) {
   if (field.type === "number" || field.type === "currency") {
     return (
       <input
+        className="form-control"
         type="number"
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}
@@ -237,7 +240,7 @@ function FieldInput({ field, value, onChange }) {
     )
   }
   const type = field.type === "date" ? "date" : "text"
-  return <input type={type} value={value ?? ""} onChange={(event) => onChange(event.target.value)} />
+  return <input className="form-control" type={type} value={value ?? ""} onChange={(event) => onChange(event.target.value)} />
 }
 
 function show(value) {

@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { api } from "./api.js"
-import { Actions, Button, Field, Notice, Page, Panel } from "./ui.jsx"
+import { objectTablePath } from "./routes.js"
+import { Actions, Button, Field, List, ListButton, Meta, Notice, Page, Panel } from "./ui.jsx"
 
 const fieldTypes = ["text", "number", "currency", "date", "boolean", "enum"]
 
-export function Objects({ token, open }) {
+export function Objects({ token }) {
+  const navigate = useNavigate()
   const [objects, setObjects] = useState([])
   const [error, setError] = useState("")
   const [name, setName] = useState("")
@@ -50,28 +53,37 @@ export function Objects({ token, open }) {
   return (
     <Page title="Objects">
       <Notice tone="error">{error}</Notice>
-      <ul className="object-list">
+      <List>
         {objects.map((object) => (
-          <li key={object.id}>
-            <Button onClick={() => open({ page: "table", object: object.name })}>
-              <strong>{object.label}</strong>
-              <span>{object.name}</span>
-            </Button>
-          </li>
+          <ListButton key={object.id} onClick={() => navigate(objectTablePath(object.name))}>
+            <strong>{object.label}</strong>
+            <Meta>{object.name}</Meta>
+          </ListButton>
         ))}
-      </ul>
+      </List>
       <Panel title="New object" onSubmit={createObject}>
         <Field label="Name"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field>
         <Field label="Label"><input value={label} onChange={(event) => setLabel(event.target.value)} required /></Field>
         {fields.map((field, index) => (
-          <div className="field-row" key={index}>
-            <input value={field.name} aria-label="Field name" onChange={(event) => updateField(index, { name: event.target.value })} />
-            <select value={field.type} aria-label="Field type" onChange={(event) => updateField(index, { type: event.target.value })}>
-              {fieldTypes.map((type) => <option key={type}>{type}</option>)}
-            </select>
-            <label className="check"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />Required</label>
+          <div className="row g-2 align-items-center mb-2" key={index}>
+            <div className="col-12 col-md">
+              <input className="form-control" value={field.name} aria-label="Field name" onChange={(event) => updateField(index, { name: event.target.value })} />
+            </div>
+            <div className="col-12 col-md-3">
+              <select className="form-select" value={field.type} aria-label="Field type" onChange={(event) => updateField(index, { type: event.target.value })}>
+                {fieldTypes.map((type) => <option key={type}>{type}</option>)}
+              </select>
+            </div>
+            <div className="col-auto">
+              <label className="form-check mb-0">
+                <input className="form-check-input" type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />
+                <span className="form-check-label">Required</span>
+              </label>
+            </div>
             {field.type === "enum" && (
-              <input value={field.options} placeholder="options, comma separated" onChange={(event) => updateField(index, { options: event.target.value })} />
+              <div className="col-12">
+                <input className="form-control" value={field.options} placeholder="options, comma separated" onChange={(event) => updateField(index, { options: event.target.value })} />
+              </div>
             )}
           </div>
         ))}
